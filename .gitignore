@@ -1,0 +1,8 @@
+.DS_Store
+.env
+.env*.local
+.next
+.vercel
+.work-live
+node_modules
+tsconfig.tsbuildinfo
