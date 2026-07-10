@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applySignalCorrection, nextPosture } from "@/lib/feedback";
+import { applySignalCorrection } from "@/lib/feedback";
 import type { Signals } from "@/lib/types";
 
 const base: Signals = { present: true, headphones: false, eyesOnScreen: true, posture: "upright", note: "x" };
@@ -12,18 +12,15 @@ test("applySignalCorrection flips a boolean and leaves the rest intact", () => {
   expect(out.note).toBe("x");
 });
 
-test("applySignalCorrection sets a valid posture", () => {
-  expect(applySignalCorrection(base, "posture", "slouched").posture).toBe("slouched");
+test("applySignalCorrection still allows present corrections", () => {
+  const out = applySignalCorrection(base, "present", false);
+  expect(out.present).toBe(false);
+  expect(out.headphones).toBe(false);
 });
 
-test("applySignalCorrection rejects unknown fields and mistyped values", () => {
+test("applySignalCorrection rejects removed non-scoring fields and mistyped values", () => {
   expect(() => applySignalCorrection(base, "score", 10)).toThrow();
   expect(() => applySignalCorrection(base, "present", "yes")).toThrow();
   expect(() => applySignalCorrection(base, "posture", "leaning")).toThrow();
-});
-
-test("nextPosture cycles upright -> slouched -> unknown -> upright", () => {
-  expect(nextPosture("upright")).toBe("slouched");
-  expect(nextPosture("slouched")).toBe("unknown");
-  expect(nextPosture("unknown")).toBe("upright");
+  expect(() => applySignalCorrection(base, "eyesOnScreen", false)).toThrow();
 });

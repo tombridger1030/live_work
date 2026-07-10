@@ -23,8 +23,8 @@ const snapshots: SnapshotRow[] = [
     eyesOnScreen: true,
     posture: "upright",
     note: "at desk",
-    score: 85,
-    status: "locked_in",
+    score: 30,
+    status: "present",
     thumbUrl: "/api/thumb/b"
   }
 ];
@@ -32,10 +32,10 @@ const snapshots: SnapshotRow[] = [
 test("buildHourlyCheckin summarizes an hour into one plain-English verdict", () => {
   const checkin = buildHourlyCheckin("2026-06-14", 10, snapshots);
 
-  expect(checkin.avgScore).toBe(93);
+  expect(checkin.avgScore).toBe(65);
   expect(checkin.presentPct).toBe(100);
   expect(checkin.headphonesPct).toBe(50);
-  expect(checkin.verdict).toContain("Locked in");
+  expect(checkin.verdict).toContain("At desk");
   expect(checkin.critical).toBe(false);
 });
 

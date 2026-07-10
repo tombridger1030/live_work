@@ -1,4 +1,7 @@
 export const postureValues = ["upright", "slouched", "unknown"] as const;
+export type CaptureSource = "agent" | "browser" | "absent";
+export type LivenessStatus = "fresh" | "weak" | "stale" | "not_checked";
+
 export type Posture = (typeof postureValues)[number];
 
 export type SnapshotStatus = "locked_in" | "present" | "away";
@@ -22,7 +25,12 @@ export type SnapshotRow = Signals &
     id: string;
     capturedAt: string;
     thumbUrl: string;
-    frameHash?: string | null; // dHash for change detection; null on legacy rows
+    frameHash?: string | null; // perceptual dHash for near-duplicate runs; null on legacy rows
+    captureSource?: CaptureSource | null;
+    frameSignature?: string | null; // decoded-pixel signature for exact stale-frame detection
+    proofSignature?: string | null;
+    livenessStatus?: LivenessStatus | null;
+    livenessScore?: number | null; // mean decoded-pixel delta between frame and proof frame
   };
 
 export type HourlyCheckin = {
@@ -42,10 +50,25 @@ export type DayHistory = {
   hours: number; // number of hourly check-ins recorded that day
 };
 
+// Per-day nudge bookkeeping persisted on the settings row so the 5-minute cron
+// stays idempotent: which nudges already fired today, last-seen presence, and how
+// many mute-minutes have been granted (for over-use pushback). Resets when `day`
+// rolls over.
+export type NudgeState = {
+  day: string; // local day YYYY-MM-DD this state covers
+  sent8am: boolean;
+  lastPresentAt: string | null; // ISO of the last fresh present/locked-in capture
+  lastAwayNudgeAt: string | null; // ISO of the last "wandered off" buzz
+  checkpointsSent: Record<string, boolean>; // checkpoint "at" -> already nudged
+  snoozeMinutesToday: number; // total granted mute minutes today
+};
+
 export type Settings = {
   paused: boolean;
   blur: boolean;
   updatedAt: string;
+  snoozeUntil: string | null; // ISO; all nudges suppressed until this instant
+  nudgeState: NudgeState | null; // today's nudge bookkeeping (see NudgeState)
 };
 
 export type TodayStats = {
@@ -69,5 +92,29 @@ export type AverageWindow = {
 
 export type AverageStats = {
   last7: AverageWindow;
+  previous7: AverageWindow; // the 7 present days before last7, for week-over-week deltas
   last30: AverageWindow;
+};
+
+// Persisted as scoreboard_entries (Postgres) and scoreboardEntries (local JSON)
+// to preserve existing manual reachout/feature data without a migration.
+export type LedgerEntry = {
+  day: string; // local day YYYY-MM-DD
+  reachouts: number; // manual count, >= 0
+  featureDone: boolean; // manual: at least one e2e-tested feature shipped that day
+  replies: number; // manual: replies received that day, >= 0
+  meetings: number; // manual: meetings booked that day, >= 0
+  commits: number; // auto: commits to the build repo that day, >= 0
+  merges: number; // auto: merged PRs to the build repo that day, >= 0
+};
+
+// One line of the two-way nudge conversation: an outbound bot buzz ("out") or an
+// inbound owner reply ("in"). `kind` tags the type (8am/away/checkpoint/reply/
+// grant/challenge). Read newest-first for the ledger Nudges panel.
+export type NudgeMessage = {
+  id: string;
+  createdAt: string; // ISO timestamp
+  direction: "out" | "in";
+  kind: string;
+  text: string;
 };

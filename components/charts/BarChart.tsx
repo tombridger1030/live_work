@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import {
   Bar,
   CartesianGrid,
@@ -27,19 +28,22 @@ type ChartDatum = Record<string, string | number | boolean>;
 
 type BarChartProps = {
   data: ChartDatum[];
-  index: string; // datum key shown on the x-axis
-  categories: string[]; // datum keys drawn as bar series
+  index: string;
+  categories: string[];
   colors?: AvailableChartColorsKeys[];
   valueFormatter?: (value: number) => string;
   showYAxis?: boolean;
-  startEndOnly?: boolean; // label only first/last tick — for dense axes
+  startEndOnly?: boolean;
   className?: string;
   onBarSelect?: (datum: ChartDatum) => void;
-  markKey?: string; // truthy datum key rendered as a small marker above a bar
+  markKey?: string;
+  selectedKey?: string;
 };
 
 type TooltipEntry = { dataKey?: string | number; value?: number };
-function extractPayload(value: unknown): ChartDatum | null {
+
+// Pulls the row datum out of a recharts Bar onClick payload.
+function barPayload(value: unknown): ChartDatum | null {
   if (!value || typeof value !== "object" || !("payload" in value)) {
     return null;
   }
@@ -49,13 +53,12 @@ function extractPayload(value: unknown): ChartDatum | null {
   }
   const record: ChartDatum = {};
   for (const [key, entry] of Object.entries(payload)) {
-    if (typeof entry === "string" || typeof entry === "number") {
+    if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
       record[key] = entry;
     }
   }
   return record;
 }
-
 function ChartTooltip({
   active,
   label,
@@ -96,7 +99,7 @@ function ChartTooltip({
   );
 }
 
-export function BarChart({
+function BarChartImpl({
   data,
   index,
   categories,
@@ -106,14 +109,32 @@ export function BarChart({
   startEndOnly = false,
   className,
   onBarSelect,
-  markKey
+  markKey,
+  selectedKey
 }: BarChartProps) {
   const categoryColors = constructCategoryColors(categories, colors);
 
   return (
     <div className={cn("h-44 w-full", className)}>
-      <ResponsiveContainer>
-        <RechartsBarChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }} barCategoryGap="22%">
+      <ResponsiveContainer minHeight={224} minWidth={0} initialDimension={{ width: 600, height: 224 }}>
+        <RechartsBarChart
+          data={data}
+          margin={{ top: 4, right: 0, bottom: 0, left: 0 }}
+          barCategoryGap="22%"
+          onClick={(state) => {
+            // Chart-level click so the WHOLE column (including zero-height empty
+            // hours) selects on a single click. recharts v3 types activeTooltipIndex
+            // as a string-ish index, so match on activeLabel (the x value) instead.
+            const label = state?.activeLabel;
+            if (label === undefined || label === null) {
+              return;
+            }
+            const row = data.find((entry) => String(entry[index]) === String(label));
+            if (row) {
+              onBarSelect?.(row);
+            }
+          }}
+        >
           <CartesianGrid className="stroke-white/[0.06]" horizontal vertical={false} />
           <XAxis
             dataKey={index}
@@ -161,9 +182,12 @@ export function BarChart({
               isAnimationActive={false}
               className={getColorClassName(categoryColors[category] ?? "gray", "fill")}
               onClick={(value: unknown) => {
-                const payload = extractPayload(value);
-                if (payload) {
-                  onBarSelect?.(payload);
+                // Direct per-bar click fires on the first click with no hover
+                // dependency (the chart-level handler needs a prior hover, which
+                // caused the "double-click to select" feel).
+                const row = barPayload(value);
+                if (row) {
+                  onBarSelect?.(row);
                 }
               }}
             >
@@ -177,6 +201,16 @@ export function BarChart({
                   offset={4}
                 />
               ) : null}
+              {selectedKey ? (
+                <LabelList
+                  dataKey={index}
+                  position="top"
+                  formatter={(value: unknown) => (value === selectedKey ? "▲" : "")}
+                  fill="#e4e4e7"
+                  fontSize={10}
+                  offset={markKey ? 16 : 4}
+                />
+              ) : null}
             </Bar>
           ))}
         </RechartsBarChart>
@@ -184,3 +218,8 @@ export function BarChart({
     </div>
   );
 }
+
+// Memoized so the Dashboard's frequent state changes (arming a tag, switching
+// frames or tabs) never re-render the recharts tree — its props are passed as
+// stable references, so this bails out unless the chart data itself changes.
+export const BarChart = memo(BarChartImpl);

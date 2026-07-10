@@ -1,6 +1,6 @@
 import { revalidateCaptures } from "@/lib/cache";
 import { isBearerAuthorized, jsonError } from "@/lib/auth";
-import { frameFromRequest, saveFrameSnapshot } from "@/lib/capture-pipeline";
+import { captureUploadFromRequest, saveFrameSnapshot, type CaptureUpload } from "@/lib/capture-pipeline";
 import { getOptionalEnv } from "@/lib/env";
 import { checkCaptureRateLimit } from "@/lib/rate-limit";
 import { rollupCurrentHour } from "@/lib/rollup";
@@ -13,6 +13,7 @@ export const runtime = "nodejs";
 function clientKey(request: Request): string {
   return `browser:${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "owner"}`;
 }
+
 
 export async function POST(request: Request): Promise<Response> {
   const ownerSecret = getOptionalEnv("OWNER_SECRET");
@@ -41,25 +42,35 @@ export async function POST(request: Request): Promise<Response> {
     return jsonError("Capture closed (quiet hours)", 423);
   }
 
-  let frame: Uint8Array | null;
+  let capture: CaptureUpload | null;
   try {
-    frame = await frameFromRequest(request);
+    capture = await captureUploadFromRequest(request, "browser");
   } catch (error) {
     return jsonError((error as Error).message, 413);
   }
-  if (!frame) {
+  if (!capture) {
     return jsonError("Missing frame", 400);
   }
 
   try {
-    const snapshot = await saveFrameSnapshot(frame, settings);
-    const checkin = await rollupCurrentHour(new Date(snapshot.capturedAt));
+    const result = await saveFrameSnapshot(capture, settings);
+    const liveness =
+      capture.source === "agent" && result.liveness
+        ? { livenessStatus: result.liveness.status, livenessScore: result.liveness.score }
+        : {};
+    if (!result.stored || !result.snapshot) {
+      return Response.json({ stored: false, score: result.score.score, status: result.score.status, ...liveness });
+    }
+    const checkin = await rollupCurrentHour(new Date(result.snapshot.capturedAt));
     revalidateCaptures(); // new data landed — refresh the cached dashboard reads
     return Response.json({
+      stored: true,
       checkin,
-      id: snapshot.id,
-      score: snapshot.score,
-      status: snapshot.status
+      id: result.snapshot.id,
+      score: result.snapshot.score,
+      status: result.snapshot.status,
+      ...liveness,
+      visionProvider: result.visionProvider ?? null
     });
   } catch (error) {
     if (error instanceof VisionAnalysisError) {

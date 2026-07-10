@@ -45,3 +45,20 @@ test("does not flag a dim frame with a brightly lit subject", async () => {
   const reason = await unreadableFrameReason(new Uint8Array(composed));
   expect(reason).toBeNull();
 });
+
+test("does not flag a dim near-grayscale frame with a lit face", async () => {
+  // The reported false-away bug: a dim room reads near-grayscale (tiny colour
+  // spread) and below the brightness cutoff, but a clearly-lit face gives high
+  // per-channel variance. luma 69.6 / spread 1.0 / stdev ~50 — the mean-only
+  // grayscale guard wrongly gated this to "away"; the variance floor lets it
+  // through to the model.
+  const face = await sharp({ create: { width: 22, height: 22, channels: 3, background: { r: 220, g: 212, b: 205 } } })
+    .png()
+    .toBuffer();
+  const composed = await sharp({ create: { width: 64, height: 64, channels: 3, background: { r: 50, g: 50, b: 53 } } })
+    .composite([{ input: face, top: 21, left: 21 }])
+    .jpeg({ quality: 90 })
+    .toBuffer();
+  const reason = await unreadableFrameReason(new Uint8Array(composed));
+  expect(reason).toBeNull();
+});

@@ -1,18 +1,19 @@
 # Work-Live Agent
 
-A launchd job checks every 5 minutes, captures when work is active, and backs
-off while the owner is away so the camera/vision pipeline does not burn usage.
+A launchd job checks every 5 minutes, and the server thins long away streaks so
+the public filmstrip does not fill with redundant AFK snapshots.
 
 ## How it works
 
-`launchctl` runs `run-capture.sh` every 5 minutes (`StartInterval`, and once at
-load). Each tick:
+`launchctl` runs `run-capture.sh` every 5 minutes (`StartCalendarInterval` on
+each :00/:05/... wall-clock minute, and once at load). Each tick:
 
-1. asks `/api/status` whether capture is paused, quiet, or not yet due under
-   AFK backoff — if so it exits before the camera is opened;
+1. asks `/api/status` whether capture is paused or inside quiet hours — if so it
+   exits before the camera is opened;
 2. otherwise grabs one frame from the configured camera with `imagesnap`;
-3. posts the frame to `/api/browser-capture`, which stores it and rolls the
-   current hour into one visible check-in.
+3. posts the frame to `/api/browser-capture`, which stores any return-to-desk
+   frame immediately and suppresses redundant away rows once AFK backoff kicks
+   in, then rolls the current hour when a row was stored.
 
 Two macOS details shape the layout, and both are load-bearing:
 
@@ -39,8 +40,8 @@ up.
   `bun run dev` on `http://127.0.0.1:3100`. When the target is unreachable, a
   tick logs a connection error and posts nothing.
 - `imagesnap` installed: `brew install imagesnap`.
-- The configured webcam is tried first; `WORK_LIVE_FALLBACK_CAMERA_NAME`
-  defaults to `FaceTime HD Camera` when the primary is unavailable or busy.
+- When the configured webcam is unavailable (disconnected), the agent records
+  an "away" snapshot instead of trying a fallback camera.
 
 ## One-time setup
 
@@ -92,11 +93,18 @@ launchctl print gui/$(id -u)/com.tombridger.work-live | grep -E 'runs|last exit'
 launchctl kickstart -k gui/$(id -u)/com.tombridger.work-live
 ```
 
-The launch check cadence is `StartInterval` (seconds) in
-`agent/com.tombridger.work-live.plist` — `300` = check every 5 minutes. The
-server can tell a tick to skip before the camera opens: after 30 consecutive
-away minutes it captures every 15 minutes, and after 60 away minutes it captures
-every 30 minutes. Quiet hours (1–8am), AFK backoff, and unchanged-frame dedup
+The launch check cadence is the `StartCalendarInterval` array in
+`agent/com.tombridger.work-live.plist` — one entry per 5-minute wall-clock mark.
+Calendar intervals (not `StartInterval`) are load-bearing: launchd drops
+interval firings that land while the Mac is asleep and can leave the job
+permanently pended after a multi-day sleep, whereas missed calendar firings
+coalesce into one run on wake — so the first wake after 8am always produces the
+morning check-in, no matter how long the machine was off. The away-streak
+backoff also resets at 8am (`minutesSinceMorningStart` in `lib/time.ts`), so a
+fresh morning always starts on the 5-minute cadence. The server no longer skips
+the 5-minute probe for AFK: after 30 consecutive away minutes it still inspects
+each tick but stores only every 15 minutes, and after 60 away minutes only
+every 30 minutes. Quiet hours (1–8am), AFK thinning, and unchanged-frame dedup
 keep usage low: a near-identical frame reuses the last reading instead of
 calling the vision model.
 
@@ -110,10 +118,17 @@ shows each snapshot. It is hosted on Vercel and backed by **Neon Postgres** (the
 ```
 launchd (every 5 min) -> imagesnap -> POST /api/browser-capture
    -> dHash dedup (skip vision if the frame didn't change)
-   -> else Qwen3 VL via Vercel AI Gateway on a downscaled frame -> score
-   -> Neon: snapshots + hourly_checkins rows (thumbnail bytes in the row)
+   -> else: face detector (BlazeFace on tfjs-wasm, lib/face.ts) on a downscaled frame
+        -> NO face (silhouette / back of head / backlit / empty) -> "away", VLM skipped
+   -> if away + AFK sample not due yet: no new row
+   -> else: score -> Neon: snapshots + hourly_checkins rows (thumbnail bytes in the row)
    -> page renders the latest snapshot; thumbnails served via /api/thumb/<id>
 ```
+
+Presence is decided DETERMINISTICALLY by the face detector, not the VLM: a frame
+with no detectable front-facing face is recorded as "away" without a model call.
+The model is vendored in-repo (`models/blazeface/`) and traced into the capture/
+backfill functions by `next.config.ts`, so no runtime download is needed.
 
 There is no object store: thumbnails are persisted as `data:` URIs inside the
 snapshot row (see `persistThumbnail` in `lib/store.ts`), so the deploy needs only
@@ -121,11 +136,16 @@ Neon. The schema is created lazily on first request (`sqlClient` in
 `lib/store.ts`).
 
 Required Vercel env (production): `OWNER_SECRET` (must equal the agent's),
-`AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN`, `WORK_LIVE_VISION_MODEL`
-(defaults to `alibaba/qwen3-vl-instruct`), `WORK_LIVE_TIME_ZONE`, plus Neon's
-auto-injected `POSTGRES_URL`. `ANTHROPIC_API_KEY` remains a local fallback when
-gateway credentials are absent. `CAPTURE_SECRET`/`CRON_SECRET` are set but unused by the hourly
+`DASHSCOPE_API_KEY` or `QWEN_API_KEY`, `WORK_LIVE_VISION_MODEL` (defaults to
+`qwen3.6-flash`), `WORK_LIVE_TIME_ZONE`, plus Neon's auto-injected
+`POSTGRES_URL`. `WORK_LIVE_QWEN_BASE_URL` (or `DASHSCOPE_BASE_URL`) overrides
+the default Token Plan OpenAI-compatible base URL when your Alibaba workspace/region
+needs a specific endpoint. `CAPTURE_SECRET`/`CRON_SECRET` are set but unused by the hourly
 browser-capture path. The Hobby plan caps cron at once-per-day, so there is no
 cron; `/api/browser-capture` rolls up the current hour inline on every capture.
+
+Optional: `WORK_LIVE_PRESENCE_MIN_SCORE` (default `0.5`) — the detector
+confidence a person must clear to count as present. Raise it to be stricter
+about presence, lower it if real-but-poorly-lit people are being missed.
 
 Redeploy with `vercel --prod`.

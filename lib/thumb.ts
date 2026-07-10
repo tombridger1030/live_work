@@ -31,17 +31,22 @@ function resizeNearest(source: Buffer, width: number, height: number): Buffer {
  * Reduces a raw JPEG frame into the only image artifact the app persists.
  *
  * Preconditions: `jpeg` is a decodable image buffer. Postconditions: the return
- * value is a metadata-stripped JPEG thumbnail no wider than 480px; the raw frame
- * is not written by this module.
+ * value is a metadata-stripped JPEG thumbnail no wider than 768px — wide enough
+ * for the presence detector to judge it faithfully in the corrections eval,
+ * while still far smaller than the raw frame, which is not written by this module.
  */
 export async function toThumbnail(jpegBytes: Uint8Array, options: ThumbnailOptions): Promise<Uint8Array> {
   const source = Buffer.from(jpegBytes);
 
   try {
+    // Dynamic import required: sharp is an optional native module. Loading it
+    // lazily inside this try lets a runtime without the prebuilt binary fall
+    // back to the pure-JS resizer below instead of failing the whole module at
+    // import time.
     const sharp = (await import("sharp")).default;
     let pipeline = sharp(source, { failOn: "warning" }).rotate().resize({
-      width: 480,
-      height: 360,
+      width: 768,
+      height: 576,
       fit: "inside",
       withoutEnlargement: true
     });
@@ -52,6 +57,6 @@ export async function toThumbnail(jpegBytes: Uint8Array, options: ThumbnailOptio
 
     return pipeline.jpeg({ quality: 72, mozjpeg: true }).toBuffer();
   } catch {
-    return resizeNearest(source, options.blur ? 96 : 480, options.blur ? 72 : 360);
+    return resizeNearest(source, options.blur ? 96 : 768, options.blur ? 72 : 576);
   }
 }

@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { GET as getStatus } from "@/app/api/status/route";
 import { POST as purgeAfkOverflow } from "@/app/api/purge-afk-overflow/route";
-import { captureCadenceFor, skippedSnapshotsForCaptureCadence } from "@/lib/capture-cadence";
+import { captureCadenceFor, shouldStoreCaptureResult, skippedSnapshotsForCaptureCadence } from "@/lib/capture-cadence";
 import type { CaptureCadence } from "@/lib/capture-cadence";
 import { hourlyForDay, saveSnapshot, snapshotsForDay } from "@/lib/store";
 import type { Signals, SnapshotRow } from "@/lib/types";
@@ -119,7 +119,59 @@ test("captureCadenceFor waits thirty minutes after an hour away", () => {
   } satisfies Partial<CaptureCadence>);
 });
 
-test("status route returns AFK backoff state before the agent opens the camera", async () => {
+test("captureCadenceFor resets the away streak at the morning capture start", () => {
+  const latest = snapshot("overnight-away", "2026-06-20T00:30:00.000Z", "away");
+
+  expect(captureCadenceFor(latest, [latest], new Date("2026-06-20T08:05:00.000Z"))).toEqual({
+    due: true,
+    intervalMinutes: 5,
+    awayMinutes: 5,
+    nextDueAt: "2026-06-20T00:35:00.000Z"
+  });
+});
+
+test("captureCadenceFor keeps an overnight streak intact before the quiet window", () => {
+  const firstAway = snapshot("first-away", "2026-06-19T23:40:00.000Z", "away");
+  const latest = snapshot("latest", "2026-06-20T00:25:00.000Z", "away");
+
+  expect(captureCadenceFor(latest, [firstAway, latest], new Date("2026-06-20T00:30:00.000Z"))).toMatchObject({
+    due: false,
+    intervalMinutes: 15,
+    awayMinutes: 50
+  } satisfies Partial<CaptureCadence>);
+});
+
+test("captureCadenceFor still backs off for a streak accumulated within the same morning", () => {
+  const firstAway = snapshot("first-away", "2026-06-20T08:20:00.000Z", "away");
+  const middleAway = snapshot("middle-away", "2026-06-20T09:25:00.000Z", "away");
+  const latest = snapshot("latest", "2026-06-20T09:30:00.000Z", "away");
+
+  expect(captureCadenceFor(latest, [firstAway, middleAway, latest], new Date("2026-06-20T09:35:00.000Z"))).toMatchObject({
+    intervalMinutes: 30,
+    awayMinutes: 75
+  } satisfies Partial<CaptureCadence>);
+});
+
+test("shouldStoreCaptureResult stores the first morning tick even when still away", () => {
+  const latest = snapshot("overnight-away", "2026-06-20T00:30:00.000Z", "away");
+
+  expect(shouldStoreCaptureResult(latest, [latest], "away", new Date("2026-06-20T08:05:00.000Z"))).toBe(true);
+});
+test("shouldStoreCaptureResult still stores a return-to-desk tick during AFK backoff", () => {
+  const firstAway = snapshot("first-away", "2026-06-20T12:00:00.000Z", "away");
+  const latest = snapshot("latest", "2026-06-20T12:55:00.000Z", "away");
+
+  expect(shouldStoreCaptureResult(latest, [firstAway, latest], "locked_in", new Date("2026-06-20T13:00:00.000Z"))).toBe(true);
+});
+
+test("shouldStoreCaptureResult suppresses redundant away ticks between due samples", () => {
+  const firstAway = snapshot("first-away", "2026-06-20T12:00:00.000Z", "away");
+  const latest = snapshot("latest", "2026-06-20T12:55:00.000Z", "away");
+
+  expect(shouldStoreCaptureResult(latest, [firstAway, latest], "away", new Date("2026-06-20T13:00:00.000Z"))).toBe(false);
+});
+
+test("status route reports AFK backoff state", async () => {
   const now = Date.now();
   await saveStoredSnapshot(new Date(now - 35 * 60_000), "away");
   await saveStoredSnapshot(new Date(now - 5 * 60_000), "away");

@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { scoreFrom } from "@/lib/score";
 
-test("scoreFrom locks in only on strong present focus signals", () => {
+test("scoreFrom locks in whenever present and wearing headphones", () => {
   const result = scoreFrom({
     present: true,
     headphones: true,
-    eyesOnScreen: true,
-    posture: "upright",
+    eyesOnScreen: false,
+    posture: "unknown",
     note: "focused"
   });
 
@@ -16,9 +16,7 @@ test("scoreFrom locks in only on strong present focus signals", () => {
   });
 });
 
-test("scoreFrom scores an absent frame a clean 0 regardless of other signals", () => {
-  // Camera disconnected / nobody in frame → away → 0, even if stale signals say
-  // headphones/eyes/upright. No presence means no focus.
+test("scoreFrom scores an absent frame a clean 0 regardless of stale extras", () => {
   const result = scoreFrom({
     present: false,
     headphones: true,
@@ -27,13 +25,13 @@ test("scoreFrom scores an absent frame a clean 0 regardless of other signals", (
     note: "not at desk"
   });
 
-  expect(result.status).toBe("away");
-  expect(result.score).toBe(0);
+  expect(result).toEqual({
+    score: 0,
+    status: "away"
+  });
 });
 
-test("scoreFrom cannot lock in without headphones, even with eyes on and upright", () => {
-  // The owner only wears headphones when seriously working, so a no-headphones
-  // frame must stay below the locked-in threshold and read as merely "present".
+test("scoreFrom is 30/100 when present without headphones", () => {
   const result = scoreFrom({
     present: true,
     headphones: false,
@@ -42,30 +40,28 @@ test("scoreFrom cannot lock in without headphones, even with eyes on and upright
     note: "working but no headphones"
   });
 
-  expect(result.score).toBe(70);
-  expect(result.status).toBe("present");
+  expect(result).toEqual({
+    score: 30,
+    status: "present"
+  });
 });
 
-test("scoreFrom drops hard when eyes are off the screen (e.g. on a phone)", () => {
-  // Present, headphones on, upright — but looking at a phone. Eyes-off alone
-  // pulls it into the mid band; losing headphones too lands it near the bottom.
-  const eyesOff = scoreFrom({
+test("eyes and posture no longer affect score or status", () => {
+  const frontFacing = scoreFrom({
+    present: true,
+    headphones: true,
+    eyesOnScreen: true,
+    posture: "upright",
+    note: "upright"
+  });
+  const slouchedLookingAway = scoreFrom({
     present: true,
     headphones: true,
     eyesOnScreen: false,
-    posture: "upright",
-    note: "glancing at phone"
+    posture: "slouched",
+    note: "slouched"
   });
-  expect(eyesOff.score).toBe(72);
-  expect(eyesOff.status).toBe("present");
 
-  const eyesOffNoHeadphones = scoreFrom({
-    present: true,
-    headphones: false,
-    eyesOnScreen: false,
-    posture: "upright",
-    note: "on phone, no headphones"
-  });
-  expect(eyesOffNoHeadphones.score).toBe(42);
-  expect(eyesOffNoHeadphones.status).toBe("present");
+  expect(frontFacing).toEqual({ score: 100, status: "locked_in" });
+  expect(slouchedLookingAway).toEqual({ score: 100, status: "locked_in" });
 });

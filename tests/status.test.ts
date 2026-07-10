@@ -5,7 +5,9 @@ import type { Settings, SnapshotRow } from "@/lib/types";
 const settings: Settings = {
   paused: false,
   blur: false,
-  updatedAt: "2026-06-14T12:00:00.000Z"
+  updatedAt: "2026-06-14T12:00:00.000Z",
+  snoozeUntil: null,
+  nudgeState: null
 };
 
 const lockedInSnapshot: SnapshotRow = {

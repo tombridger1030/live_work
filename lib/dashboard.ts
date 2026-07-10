@@ -26,6 +26,7 @@ export type DashboardData = {
   isToday: boolean;
   prevDay: string | null; // nearest earlier day with data, else null
   nextDay: string | null; // nearest later day with data (never the future), else null
+  dataDays: string[]; // every local day with at least one check-in, newest first; powers the date picker
   latest: SnapshotRow | null; // live latest snapshot; drives the live status today
   statusState: PublicStatusState; // live status; only meaningful when isToday
   hourly: HourlyCheckin[]; // viewDay's per-hour aggregates
@@ -194,7 +195,7 @@ function averageWindow(daysDescending: DayFocus[], windowSize: number): AverageW
  * slice of the same descending day list.
  */
 export function buildAverageStats(daily: DayFocus[]): AverageStats {
-  return { last7: averageWindow(daily, 7), last30: averageWindow(daily, 30) };
+  return { last7: averageWindow(daily, 7), previous7: averageWindow(daily.slice(7), 7), last30: averageWindow(daily, 30) };
 }
 
 function statsFromDayFocus(day: DayFocus): TodayStats {
@@ -298,6 +299,7 @@ export async function getDashboardData(now = new Date(), requestedDay?: string):
     isToday,
     prevDay,
     nextDay,
+    dataDays: days,
     timeZone: appTimeZone(),
     latest,
     statusState: publicStatusFor(latest, settings, now),

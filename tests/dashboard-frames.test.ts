@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { framesByHour, shouldReadViewDayUncached, statsUpToLocalTime } from "@/lib/dashboard";
+import { frameStripRange, frameStripStartForSelection, shiftFrameStripWindow } from "@/lib/frame-strip";
 import type { HourlyCheckin, SnapshotRow } from "@/lib/types";
 
 // Pin the zone so capturedAt hours map straight to local hours in assertions.
@@ -61,6 +62,24 @@ test("framesByHour keeps every frame in an hour, not just the last", () => {
 
   expect(byHour[9]).toHaveLength(2);
   expect(byHour[9].map((entry) => entry.score)).toEqual([10, 90]);
+});
+test("frameStripRange clamps the requested window to the available frames", () => {
+  expect(frameStripRange(12, 0, 5)).toEqual({ start: 0, end: 5 });
+  expect(frameStripRange(12, 7, 5)).toEqual({ start: 7, end: 12 });
+  expect(frameStripRange(12, 9, 5)).toEqual({ start: 7, end: 12 });
+});
+
+test("frameStripStartForSelection biases toward the newest side of the strip", () => {
+  expect(frameStripStartForSelection(12, 11, 5)).toBe(7);
+  expect(frameStripStartForSelection(12, 3, 5)).toBe(0);
+  expect(frameStripStartForSelection(5, 4, 5)).toBe(0);
+});
+
+test("shiftFrameStripWindow pages by whole visible sections", () => {
+  expect(shiftFrameStripWindow(12, 7, 5, -1)).toBe(2);
+  expect(shiftFrameStripWindow(12, 2, 5, -1)).toBe(0);
+  expect(shiftFrameStripWindow(12, 2, 5, 1)).toBe(7);
+  expect(shiftFrameStripWindow(8, 3, 5, -1)).toBe(0);
 });
 
 test("statsUpToLocalTime compares only through the current local minute", () => {

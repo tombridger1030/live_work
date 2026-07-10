@@ -1,8 +1,16 @@
+.agents
+.claude
 .DS_Store
 .env
 .env*.local
 .next
+.tmp
 .vercel
 .work-live
 node_modules
 tsconfig.tsbuildinfo
+skills-lock.json
+
+# Tom's local Claude/agent session artifacts (screenshots, working notes) —
+# never part of the shipped project; curated media lives in docs/screenshots.
+tasks/

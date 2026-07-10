@@ -20,15 +20,20 @@ fi
 
 BUN="/Users/tombridger/.bun/bin/bun"
 IMAGESNAP="${IMAGESNAP_BIN:-/opt/homebrew/bin/imagesnap}"
-# Backup camera tried when the primary is unavailable — e.g. the external webcam
-# is unplugged OR busy because the owner is on a video call. Falls back to the
-# built-in camera so a call no longer reads as "away".
-FALLBACK_CAMERA="${WORK_LIVE_FALLBACK_CAMERA_NAME:-FaceTime HD Camera}"
-# Hard cap per camera. imagesnap can BLOCK indefinitely on a busy/wedged camera,
+# Hard cap on capture. imagesnap can BLOCK indefinitely on a busy/wedged camera,
 # and launchd will not start the next tick until this one returns — so without a
 # timeout one stuck capture freezes all future check-ins. Kept well under the
-# 300s launchd interval even if both cameras time out.
+# 300s launchd interval.
 CAPTURE_TIMEOUT="${WORK_LIVE_CAPTURE_TIMEOUT:-20}"
+
+# Camera warmup seconds: imagesnap discards frames for this long so the webcam's
+# auto-exposure/auto-focus settle before the grab. 1s gave dark, grainy frames
+# in dim light; 2s is steadier. Stays well under CAPTURE_TIMEOUT.
+CAPTURE_WARMUP="${WORK_LIVE_CAPTURE_WARMUP:-2}"
+# Seconds between the scored frame and the liveness proof frame. A frozen feed
+# repeats exactly; a live camera should drift from sensor noise, exposure, or motion.
+LIVENESS_GAP="${WORK_LIVE_LIVENESS_GAP:-1}"
+
 
 # 1. Pause check via the server (no camera opened). Exit quietly when paused.
 rc=0
@@ -41,24 +46,32 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 FRAME="$(mktemp -t work-live-frame).jpg"
-trap 'rm -f "$FRAME"' EXIT
+PROOF_FRAME="$(mktemp -t work-live-proof).jpg"
+trap 'rm -f "$FRAME" "$PROOF_FRAME"' EXIT
 
-# Capture one frame from $1 into $FRAME under a hard timeout. perl's alarm sends
+# Capture one frame from $1 into $2 under a hard timeout. perl's alarm sends
 # SIGALRM after CAPTURE_TIMEOUT and survives exec, so a hung imagesnap is killed.
 # Succeeds only on a clean exit AND a non-empty file.
 snap() {
-  rm -f "$FRAME"
-  perl -e 'alarm shift; exec @ARGV' "$CAPTURE_TIMEOUT" "$IMAGESNAP" -d "$1" -w 1 "$FRAME" >/dev/null 2>&1
+  local camera="$1"
+  local output="$2"
+  rm -f "$output"
+  perl -e 'alarm shift; exec @ARGV' "$CAPTURE_TIMEOUT" "$IMAGESNAP" -d "$camera" -w "$CAPTURE_WARMUP" "$output" >/dev/null 2>&1
   local snap_rc=$?
-  [ "$snap_rc" -eq 0 ] && [ -s "$FRAME" ]
+  [ "$snap_rc" -eq 0 ] && [ -s "$output" ]
 }
 
-# 2. Try the primary camera, then the built-in backup. If neither yields a frame
-#    (unplugged, busy on a call, or wedged), record an "away" 0 so there is no gap.
-if snap "$WORK_LIVE_CAMERA_NAME"; then
-  "$BUN" "$DIR/capture.ts" post "$FRAME"
-elif [ "$FALLBACK_CAMERA" != "$WORK_LIVE_CAMERA_NAME" ] && snap "$FALLBACK_CAMERA"; then
-  "$BUN" "$DIR/capture.ts" post "$FRAME"
+# 2. Try the primary camera. If it fails (webcam disconnected means gaming on PC,
+# not present), record an "away" 0 so there is no gap in the timeline. If only
+# the proof capture fails, still post the scored frame: the server marks it away
+# because a single agent frame is no longer enough evidence.
+if snap "$WORK_LIVE_CAMERA_NAME" "$FRAME"; then
+  sleep "$LIVENESS_GAP"
+  if snap "$WORK_LIVE_CAMERA_NAME" "$PROOF_FRAME"; then
+    "$BUN" "$DIR/capture.ts" post "$FRAME" "$PROOF_FRAME"
+  else
+    "$BUN" "$DIR/capture.ts" post "$FRAME"
+  fi
 else
   "$BUN" "$DIR/capture.ts" absent
 fi

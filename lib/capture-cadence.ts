@@ -1,5 +1,5 @@
-import { minutesSince } from "@/lib/time";
-import type { SnapshotRow } from "@/lib/types";
+import { minutesSince, minutesSinceMorningStart } from "@/lib/time";
+import type { SnapshotRow, SnapshotStatus } from "@/lib/types";
 
 export const captureCadenceLookbackMinutes = 120;
 
@@ -48,7 +48,9 @@ function intervalFor(awayMinutes: number | null): CaptureCadence["intervalMinute
  * least `captureCadenceLookbackMinutes`; `latest` is the newest stored snapshot
  * or null. Postconditions: present/locked-in work uses the normal 5-minute
  * cadence; a consecutive away streak backs off to 15 minutes after 30 minutes
- * away and 30 minutes after an hour away.
+ * away and 30 minutes after an hour away. The streak is clamped at the morning
+ * capture start (8am local), so a new working day always begins back on the
+ * 5-minute cadence regardless of how long the previous absence ran.
  */
 export function captureCadenceFor(
   latest: SnapshotRow | null,
@@ -59,7 +61,10 @@ export function captureCadenceFor(
     return { due: true, intervalMinutes: activeIntervalMinutes, awayMinutes: null, nextDueAt: null };
   }
 
-  const awayMinutes = latest.status === "away" ? minutesSince(currentAwayStart(latest, recentSnapshots), now) : null;
+  const awayMinutes =
+    latest.status === "away"
+      ? Math.min(minutesSince(currentAwayStart(latest, recentSnapshots), now), minutesSinceMorningStart(now))
+      : null;
   const intervalMinutes = intervalFor(awayMinutes);
   const nextDueAtDate = new Date(new Date(latest.capturedAt).getTime() + intervalMinutes * 60_000);
 
@@ -69,6 +74,27 @@ export function captureCadenceFor(
     awayMinutes,
     nextDueAt: nextDueAtDate.toISOString()
   };
+}
+/**
+ * Decides whether a freshly analyzed result should become a stored snapshot row.
+ *
+ * Preconditions: `recentSnapshots` are ascending by `capturedAt` and cover at
+ * least `captureCadenceLookbackMinutes`; `latest` is the newest stored snapshot
+ * or null. Postconditions: any return to desk is stored on the next 5-minute
+ * tick; only consecutive away results are thinned to the AFK 5/15/30-minute
+ * cadence.
+ */
+export function shouldStoreCaptureResult(
+  latest: SnapshotRow | null,
+  recentSnapshots: SnapshotRow[],
+  nextStatus: SnapshotStatus,
+  now = new Date()
+): boolean {
+  if (nextStatus !== "away" || latest?.status !== "away") {
+    return true;
+  }
+
+  return captureCadenceFor(latest, recentSnapshots, now).due;
 }
 
 /**

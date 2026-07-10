@@ -1,22 +1,33 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { DayHistory, HourlyCheckin, ScoreResult, Settings, Signals, SnapshotRow } from "@/lib/types";
+import type { DayHistory, HourlyCheckin, LedgerEntry, NudgeMessage, NudgeState, ScoreResult, Settings, Signals, SnapshotRow } from "@/lib/types";
 import { appTimeZone, isQuietHour, isScoringHour, localDayKey, localHour, quietHourEnd, quietHourStart, scoringEndHour, scoringStartHour } from "@/lib/time";
 import { RUBRIC_VERSION } from "@/lib/score";
+import { correctableFields, type CorrectableField } from "@/lib/feedback";
 
 type SaveSnapshotInput = {
   capturedAt?: Date;
   signals: Signals;
   score: ScoreResult;
   thumbnail: Uint8Array;
+} & SnapshotCaptureMetadata;
+type SnapshotCaptureMetadata = {
   frameHash?: string | null;
+  captureSource?: SnapshotRow["captureSource"];
+  frameSignature?: string | null;
+  proofSignature?: string | null;
+  livenessStatus?: SnapshotRow["livenessStatus"];
+  livenessScore?: number | null;
 };
+
 
 type LocalState = {
   snapshots: SnapshotRow[];
   hourlyCheckins: HourlyCheckin[];
+  scoreboardEntries: LedgerEntry[];
+  nudgeMessages: NudgeMessage[];
   settings: Settings;
 };
 
@@ -39,10 +50,14 @@ function defaultState(): LocalState {
   return {
     snapshots: [],
     hourlyCheckins: [],
+    scoreboardEntries: [],
+    nudgeMessages: [],
     settings: {
       paused: false,
       blur: false,
-      updatedAt: new Date(0).toISOString()
+      updatedAt: new Date(0).toISOString(),
+      snoozeUntil: null,
+      nudgeState: null
     }
   };
 }
@@ -59,13 +74,37 @@ async function readLocalState(): Promise<LocalState> {
   const state = JSON.parse(await readFile(localStoreFile, "utf8")) as LocalState;
   return {
     ...state,
-    hourlyCheckins: state.hourlyCheckins.map(normalizeCheckin)
+    hourlyCheckins: state.hourlyCheckins.map(normalizeCheckin),
+    scoreboardEntries: state.scoreboardEntries ?? [],
+    nudgeMessages: state.nudgeMessages ?? []
   };
 }
 
 async function writeLocalState(state: LocalState): Promise<void> {
   await mkdir(localRoot, { recursive: true });
-  await writeFile(localStoreFile, `${JSON.stringify(state, null, 2)}\n`);
+  // Atomic write: a unique temp file + rename so concurrent writers never leave
+  // the store half-written (which would crash every reader on JSON.parse).
+  const tempFile = `${localStoreFile}.${randomUUID()}.tmp`;
+  await writeFile(tempFile, `${JSON.stringify(state, null, 2)}\n`);
+  await rename(tempFile, localStoreFile);
+}
+
+// Serializes a read-modify-write of the local JSON store so concurrent writers
+// (e.g. a debounced reachouts flush racing a feature toggle) can't lose updates
+// or interleave. Postgres paths don't use this — the database upserts atomically.
+let localStateChain: Promise<unknown> = Promise.resolve();
+async function withLocalState<T>(mutator: (state: LocalState) => T | Promise<T>): Promise<T> {
+  const run = localStateChain.then(async () => {
+    const state = await readLocalState();
+    const result = await mutator(state);
+    await writeLocalState(state);
+    return result;
+  });
+  localStateChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
 }
 
 async function persistThumbnail(id: string, thumbnail: Uint8Array): Promise<string> {
@@ -81,7 +120,7 @@ async function persistThumbnail(id: string, thumbnail: Uint8Array): Promise<stri
 
   if (hasPostgresConfig()) {
     // No Blob store provisioned: inline the thumbnail as a data URI persisted in
-    // the snapshot row. Thumbnails are small (<=480px, q72), so this keeps the
+    // the snapshot row. Thumbnails stay modest (<=768px, q72), so this keeps the
     // deployed tracer bullet on a single service (Postgres) with no object store.
     return `data:image/jpeg;base64,${Buffer.from(thumbnail).toString("base64")}`;
   }
@@ -109,6 +148,11 @@ async function sqlClient() {
       )
     `;
     await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS frame_hash TEXT`;
+    await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS capture_source TEXT`;
+    await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS frame_signature TEXT`;
+    await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS proof_signature TEXT`;
+    await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS liveness_status TEXT`;
+    await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS liveness_score DOUBLE PRECISION`;
     await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS rubric_version INTEGER`;
     await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS human_verified BOOLEAN`;
     await sql`CREATE INDEX IF NOT EXISTS snapshots_captured_at_idx ON snapshots (captured_at DESC)`;
@@ -138,6 +182,8 @@ async function sqlClient() {
       VALUES (1, FALSE, FALSE)
       ON CONFLICT (id) DO NOTHING
     `;
+    await sql`ALTER TABLE settings ADD COLUMN IF NOT EXISTS snooze_until TIMESTAMPTZ`;
+    await sql`ALTER TABLE settings ADD COLUMN IF NOT EXISTS nudge_state JSONB`;
     await sql`
       CREATE TABLE IF NOT EXISTS feedback (
         id TEXT PRIMARY KEY,
@@ -148,6 +194,28 @@ async function sqlClient() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )
     `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS scoreboard_entries (
+        day DATE PRIMARY KEY,
+        reachouts INTEGER NOT NULL DEFAULT 0 CHECK (reachouts >= 0),
+        feature_done BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `;
+    await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS replies INTEGER NOT NULL DEFAULT 0 CHECK (replies >= 0)`;
+    await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS meetings INTEGER NOT NULL DEFAULT 0 CHECK (meetings >= 0)`;
+    await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS commits INTEGER NOT NULL DEFAULT 0 CHECK (commits >= 0)`;
+    await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS merges INTEGER NOT NULL DEFAULT 0 CHECK (merges >= 0)`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS nudge_messages (
+        id TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        direction TEXT NOT NULL CHECK (direction IN ('out','in')),
+        kind TEXT NOT NULL,
+        text TEXT NOT NULL
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS nudge_messages_created_at_idx ON nudge_messages (created_at DESC)`;
     postgresSchemaReady = true;
   }
   return sql;
@@ -167,7 +235,12 @@ function mapSnapshot(row: Record<string, unknown>): SnapshotRow {
     note: String(row.note),
     // Cacheable route URL; the bytes are served by /api/thumb from the column.
     thumbUrl: `/api/thumb/${id}`,
-    frameHash: row.frame_hash ? String(row.frame_hash) : null
+    frameHash: row.frame_hash ? String(row.frame_hash) : null,
+    captureSource: row.capture_source ? (String(row.capture_source) as SnapshotRow["captureSource"]) : null,
+    frameSignature: row.frame_signature ? String(row.frame_signature) : null,
+    proofSignature: row.proof_signature ? String(row.proof_signature) : null,
+    livenessStatus: row.liveness_status ? (String(row.liveness_status) as SnapshotRow["livenessStatus"]) : null,
+    livenessScore: row.liveness_score == null ? null : Number(row.liveness_score)
   };
 }
 
@@ -180,6 +253,28 @@ function mapCheckin(row: Record<string, unknown>): HourlyCheckin {
     headphonesPct: Number(row.headphones_pct),
     verdict: String(row.verdict),
     critical: Boolean(row.critical)
+  };
+}
+
+function mapLedgerEntry(row: Record<string, unknown>): LedgerEntry {
+  return {
+    day: String(row.day),
+    reachouts: Number(row.reachouts),
+    featureDone: Boolean(row.feature_done),
+    replies: Number(row.replies),
+    meetings: Number(row.meetings),
+    commits: Number(row.commits),
+    merges: Number(row.merges)
+  };
+}
+
+function mapNudgeMessage(row: Record<string, unknown>): NudgeMessage {
+  return {
+    id: String(row.id),
+    createdAt: new Date(row.created_at as string | Date).toISOString(),
+    direction: row.direction as NudgeMessage["direction"],
+    kind: String(row.kind),
+    text: String(row.text)
   };
 }
 
@@ -202,18 +297,26 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
     // Expose a cacheable route URL, not the raw bytes; the thumbnail itself lives
     // in the `thumb_url` column (data URI) or local file and is served by the route.
     thumbUrl: `/api/thumb/${id}`,
-    frameHash: input.frameHash ?? null
+    frameHash: input.frameHash ?? null,
+    captureSource: input.captureSource ?? null,
+    frameSignature: input.frameSignature ?? null,
+    proofSignature: input.proofSignature ?? null,
+    livenessStatus: input.livenessStatus ?? null,
+    livenessScore: input.livenessScore ?? null
   };
 
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     await sql`
       INSERT INTO snapshots (
-        id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, thumb_url, frame_hash, rubric_version
+        id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, thumb_url,
+        frame_hash, rubric_version, capture_source, frame_signature, proof_signature, liveness_status, liveness_score
       )
       VALUES (
         ${row.id}, ${row.capturedAt}, ${row.present}, ${row.headphones}, ${row.eyesOnScreen},
-        ${row.posture}, ${row.score}, ${row.status}, ${row.note}, ${stored}, ${row.frameHash}, ${RUBRIC_VERSION}
+        ${row.posture}, ${row.score}, ${row.status}, ${row.note}, ${stored},
+        ${row.frameHash}, ${RUBRIC_VERSION}, ${row.captureSource}, ${row.frameSignature},
+        ${row.proofSignature}, ${row.livenessStatus}, ${row.livenessScore}
       )
     `;
     return row;
@@ -231,7 +334,7 @@ export async function latestSnapshot(): Promise<SnapshotRow | null> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
-      SELECT id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, frame_hash
+      SELECT id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, frame_hash, capture_source, frame_signature, proof_signature, liveness_status, liveness_score
       FROM snapshots ORDER BY captured_at DESC LIMIT 1
     `;
     return result.rows[0] ? mapSnapshot(result.rows[0]) : null;
@@ -245,7 +348,7 @@ export async function snapshotsSince(since: Date): Promise<SnapshotRow[]> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
-      SELECT id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, frame_hash
+      SELECT id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, frame_hash, capture_source, frame_signature, proof_signature, liveness_status, liveness_score
       FROM snapshots WHERE captured_at >= ${since.toISOString()} ORDER BY captured_at ASC
     `;
     return result.rows.map(mapSnapshot);
@@ -297,7 +400,7 @@ export async function snapshotsForDay(day: string): Promise<SnapshotRow[]> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
-      SELECT id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, frame_hash
+      SELECT id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, frame_hash, capture_source, frame_signature, proof_signature, liveness_status, liveness_score
       FROM snapshots
       WHERE captured_at >= ${from.toISOString()} AND captured_at < ${to.toISOString()}
       ORDER BY captured_at ASC
@@ -355,19 +458,45 @@ export async function snapshotThumbnailBytes(id: string): Promise<Uint8Array | n
  * oldest first, capped at `limit` — the queue the backfill re-analyzes against
  * the current rubric. Postgres-only; local dev (fixtures) has nothing to backfill.
  */
-export async function snapshotsNeedingRubric(version: number, limit: number): Promise<{ id: string; capturedAt: string }[]> {
+export async function snapshotsNeedingRubric(
+  version: number,
+  limit: number,
+): Promise<
+  {
+    id: string;
+    capturedAt: string;
+    rubricVersion: number | null;
+    signals: {
+      present: boolean;
+      headphones: boolean;
+      eyesOnScreen: boolean;
+      posture: SnapshotRow["posture"];
+      note: string;
+    };
+  }[]
+> {
   if (!hasPostgresConfig()) {
     return [];
   }
   const sql = await sqlClient();
   const result = await sql`
-    SELECT id, captured_at FROM snapshots
+    SELECT id, captured_at, rubric_version, present, headphones, eyes_on_screen, posture, note
+    FROM snapshots
     WHERE rubric_version IS DISTINCT FROM ${version} AND human_verified IS NOT TRUE
     ORDER BY captured_at ASC LIMIT ${limit}
   `;
   return result.rows.map((row) => ({
     id: String(row.id),
-    capturedAt: new Date(row.captured_at as string | Date).toISOString()
+    capturedAt: new Date(row.captured_at as string | Date).toISOString(),
+    rubricVersion:
+      row.rubric_version == null ? null : Number(row.rubric_version),
+    signals: {
+      present: Boolean(row.present),
+      headphones: Boolean(row.headphones),
+      eyesOnScreen: Boolean(row.eyes_on_screen),
+      posture: row.posture as SnapshotRow["posture"],
+      note: String(row.note),
+    },
   }));
 }
 
@@ -396,9 +525,9 @@ export async function getSnapshotById(id: string): Promise<SnapshotRow | null> {
 }
 
 /**
- * Writes a human-corrected reading: updates the scored signals + score/status and
- * marks the row human_verified so the rubric backfill never overwrites it. Human
- * feedback is permanent ground truth.
+ * Writes a human-corrected reading: updates the scored signals, note,
+ * score/status and marks the row human_verified so the rubric backfill never
+ * overwrites it. Human feedback is permanent ground truth.
  */
 export async function correctSnapshot(id: string, signals: Signals, score: ScoreResult): Promise<void> {
   if (hasPostgresConfig()) {
@@ -408,6 +537,7 @@ export async function correctSnapshot(id: string, signals: Signals, score: Score
         present = ${signals.present},
         headphones = ${signals.headphones},
         eyes_on_screen = ${signals.eyesOnScreen},
+        note = ${signals.note},
         posture = ${signals.posture},
         score = ${score.score},
         status = ${score.status},
@@ -438,6 +568,81 @@ export async function recordFeedback(input: { snapshotId: string; field: string;
     INSERT INTO feedback (id, snapshot_id, field, old_value, new_value)
     VALUES (${randomUUID()}, ${input.snapshotId}, ${input.field}, ${input.oldValue}, ${input.newValue})
   `;
+}
+
+/**
+ * The human-corrected snapshots, newest first — the regression set for the
+ * capture agent's misclassifications. A row is included the moment a human
+ * correction marks it `human_verified`, so every correction auto-enrolls with no
+ * extra bookkeeping. Postgres-only (returns [] in local dev, like feedback).
+ *
+ * `correctedFields` is the set of signals a human actually overrode (from the
+ * feedback log), so an eval asserts ONLY human-truth fields and never treats a
+ * still-model-authored signal on the same row as ground truth. Only rows with an
+ * explicit feedback correction are returned: the owner-confirmed away-window path
+ * (purge-gaming) marks rows human_verified WITHOUT a feedback row to encode a
+ * not-working window (a person can be physically present but off-task), not a
+ * presence-detector error — those are excluded so the eval judges the detector
+ * against real physical-presence corrections only.
+ */
+export type CorrectionCase = {
+  id: string;
+  capturedAt: string;
+  present: boolean;
+  headphones: boolean;
+  correctedFields: CorrectableField[];
+};
+
+export async function humanVerifiedCases(limit: number): Promise<CorrectionCase[]> {
+  if (!hasPostgresConfig()) {
+    return [];
+  }
+  const sql = await sqlClient();
+  const result = await sql`
+    SELECT s.id, s.captured_at, s.present, s.headphones,
+      ARRAY_AGG(DISTINCT f.field) AS corrected_fields
+    FROM snapshots s
+    JOIN feedback f ON f.snapshot_id = s.id AND f.field IN ('present', 'headphones')
+    WHERE s.human_verified IS TRUE
+    GROUP BY s.id, s.captured_at, s.present, s.headphones
+    ORDER BY s.captured_at DESC
+    LIMIT ${limit}
+  `;
+  return result.rows.map((row) => {
+    const logged = ((row.corrected_fields as string[] | null) ?? []).filter(
+      (field): field is CorrectableField => (correctableFields as readonly string[]).includes(field),
+    );
+    return {
+      id: String(row.id),
+      capturedAt: new Date(row.captured_at as string | Date).toISOString(),
+      present: Boolean(row.present),
+      headphones: Boolean(row.headphones),
+      correctedFields: logged,
+    };
+  });
+}
+
+/**
+ * How many `human_verified` rows carry NO explicit correctable feedback — the
+ * owner-confirmed not-working windows (purge-gaming). They are real corrections
+ * and stay counted for visibility, but they encode off-task status rather than a
+ * physical-presence detector error, so they are excluded from the detector eval
+ * rather than scored as regressions. Postgres-only; 0 in local dev.
+ */
+export async function manualOverrideCaseCount(): Promise<number> {
+  if (!hasPostgresConfig()) {
+    return 0;
+  }
+  const sql = await sqlClient();
+  const result = await sql`
+    SELECT COUNT(*)::int AS n
+    FROM snapshots s
+    WHERE s.human_verified IS TRUE
+      AND NOT EXISTS (
+        SELECT 1 FROM feedback f WHERE f.snapshot_id = s.id AND f.field IN ('present', 'headphones')
+      )
+  `;
+  return Number(result.rows[0]?.n ?? 0);
 }
 
 /**
@@ -774,14 +979,164 @@ export async function purgeQuietHourData(): Promise<{ snapshots: number; checkin
 export async function getSettings(): Promise<Settings> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
-    const result = await sql`SELECT paused, blur, updated_at FROM settings WHERE id = 1`;
+    const result = await sql`SELECT paused, blur, updated_at, snooze_until, nudge_state FROM settings WHERE id = 1`;
     const row = result.rows[0];
     return {
       paused: Boolean(row?.paused),
       blur: Boolean(row?.blur),
-      updatedAt: new Date((row?.updated_at as string | Date | undefined) ?? Date.now()).toISOString()
+      updatedAt: new Date((row?.updated_at as string | Date | undefined) ?? Date.now()).toISOString(),
+      snoozeUntil: row?.snooze_until ? new Date(row.snooze_until as string | Date).toISOString() : null,
+      nudgeState: (row?.nudge_state as NudgeState | null) ?? null
     };
   }
 
-  return (await readLocalState()).settings;
+  const settings = (await readLocalState()).settings;
+  return { ...settings, snoozeUntil: settings.snoozeUntil ?? null, nudgeState: settings.nudgeState ?? null };
+}
+
+/**
+ * Sets (or clears, with null) the instant until which ALL nudges are suppressed.
+ * The 5-minute evaluator returns early while now < snoozeUntil. Idempotent.
+ */
+export async function setSnoozeUntil(iso: string | null): Promise<void> {
+  if (hasPostgresConfig()) {
+    const sql = await sqlClient();
+    await sql`UPDATE settings SET snooze_until = ${iso}, updated_at = now() WHERE id = 1`;
+    return;
+  }
+
+  await withLocalState((state) => {
+    state.settings = { ...state.settings, snoozeUntil: iso, updatedAt: new Date().toISOString() };
+  });
+}
+
+/**
+ * Persists today's nudge bookkeeping (see NudgeState) on the settings row so the
+ * 5-minute cron stays idempotent across invocations. Postgres stores it as JSONB.
+ */
+export async function setNudgeState(nudgeState: NudgeState): Promise<void> {
+  if (hasPostgresConfig()) {
+    const sql = await sqlClient();
+    await sql`UPDATE settings SET nudge_state = ${JSON.stringify(nudgeState)}::jsonb, updated_at = now() WHERE id = 1`;
+    return;
+  }
+
+  await withLocalState((state) => {
+    state.settings = { ...state.settings, nudgeState, updatedAt: new Date().toISOString() };
+  });
+}
+
+/**
+ * Ledger entries (manual reachouts + feature-shipped flag) whose local day
+ * falls in [fromDay, toDay] inclusive, ascending. Array = cache-serializable.
+ */
+export async function getLedgerEntries(fromDay: string, toDay: string): Promise<LedgerEntry[]> {
+  if (hasPostgresConfig()) {
+    const sql = await sqlClient();
+    const result = await sql`
+      SELECT to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, commits, merges
+      FROM scoreboard_entries WHERE day >= ${fromDay} AND day <= ${toDay} ORDER BY day
+    `;
+    return result.rows.map(mapLedgerEntry);
+  }
+
+  const state = await readLocalState();
+  return (state.scoreboardEntries ?? [])
+    .filter((entry) => entry.day >= fromDay && entry.day <= toDay)
+    .sort((left, right) => left.day.localeCompare(right.day));
+}
+
+/**
+ * Upserts one ledger day. A field left undefined is preserved (COALESCE in
+ * Postgres, existing value locally), so a reachouts edit never clobbers the
+ * feature flag and vice-versa. Returns the persisted row.
+ */
+export async function setLedgerEntry(
+  day: string,
+  fields: { reachouts?: number; featureDone?: boolean; replies?: number; meetings?: number; commits?: number; merges?: number }
+): Promise<LedgerEntry> {
+  if (hasPostgresConfig()) {
+    const sql = await sqlClient();
+    const result = await sql`
+      INSERT INTO scoreboard_entries (day, reachouts, feature_done, replies, meetings, commits, merges, updated_at)
+      VALUES (${day}, ${fields.reachouts ?? 0}, ${fields.featureDone ?? false}, ${fields.replies ?? 0}, ${fields.meetings ?? 0}, ${fields.commits ?? 0}, ${fields.merges ?? 0}, now())
+      ON CONFLICT (day) DO UPDATE SET
+        reachouts    = COALESCE(${fields.reachouts ?? null}, scoreboard_entries.reachouts),
+        feature_done = COALESCE(${fields.featureDone ?? null}, scoreboard_entries.feature_done),
+        replies      = COALESCE(${fields.replies ?? null}, scoreboard_entries.replies),
+        meetings     = COALESCE(${fields.meetings ?? null}, scoreboard_entries.meetings),
+        commits      = COALESCE(${fields.commits ?? null}, scoreboard_entries.commits),
+        merges       = COALESCE(${fields.merges ?? null}, scoreboard_entries.merges),
+        updated_at   = now()
+      RETURNING to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, commits, merges
+    `;
+    return mapLedgerEntry(result.rows[0]);
+  }
+
+  return withLocalState((state) => {
+    const entries = state.scoreboardEntries ?? [];
+    const existing = entries.find((entry) => entry.day === day);
+    const next: LedgerEntry = {
+      day,
+      reachouts: fields.reachouts ?? existing?.reachouts ?? 0,
+      featureDone: fields.featureDone ?? existing?.featureDone ?? false,
+      replies: fields.replies ?? existing?.replies ?? 0,
+      meetings: fields.meetings ?? existing?.meetings ?? 0,
+      commits: fields.commits ?? existing?.commits ?? 0,
+      merges: fields.merges ?? existing?.merges ?? 0
+    };
+    state.scoreboardEntries = [...entries.filter((entry) => entry.day !== day), next].sort((left, right) =>
+      left.day.localeCompare(right.day)
+    );
+    return next;
+  });
+}
+
+/**
+ * Appends one line to the two-way nudge conversation. Postgres assigns the UUID
+ * and default timestamp; the local branch stamps both so the shapes match.
+ * Append-only — there is no update or delete path (see plan: retention later).
+ */
+export async function appendNudgeMessage(m: { direction: "out" | "in"; kind: string; text: string }): Promise<void> {
+  if (hasPostgresConfig()) {
+    const sql = await sqlClient();
+    await sql`
+      INSERT INTO nudge_messages (id, direction, kind, text)
+      VALUES (${randomUUID()}, ${m.direction}, ${m.kind}, ${m.text})
+    `;
+    return;
+  }
+
+  await withLocalState((state) => {
+    const messages = state.nudgeMessages ?? [];
+    messages.push({
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+      direction: m.direction,
+      kind: m.kind,
+      text: m.text
+    });
+    state.nudgeMessages = messages;
+  });
+}
+
+/**
+ * The most recent `limit` nudge-conversation lines, newest first. Array =
+ * cache-serializable for the ledger page.
+ */
+export async function getRecentNudgeMessages(limit: number): Promise<NudgeMessage[]> {
+  if (hasPostgresConfig()) {
+    const sql = await sqlClient();
+    const result = await sql`
+      SELECT id, created_at, direction, kind, text
+      FROM nudge_messages ORDER BY created_at DESC LIMIT ${limit}
+    `;
+    return result.rows.map(mapNudgeMessage);
+  }
+
+  const state = await readLocalState();
+  return (state.nudgeMessages ?? [])
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, limit);
 }

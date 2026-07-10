@@ -40,7 +40,18 @@ export async function backfillBatch(limit: number): Promise<BackfillResult> {
   let skipped = 0;
   let modelError = false;
 
-  for (const { id, capturedAt } of pending) {
+  for (const { id, capturedAt, rubricVersion, signals: currentSignals } of pending) {
+    // v5 only changed score/status (present + headphones only). Rows already on
+    // v4 have the correct person-detection presence signal, so they can be
+    // re-scored from the stored signals without re-reading the thumbnail or
+    // spending another Qwen call.
+    if (rubricVersion === 4) {
+      await updateSnapshotAnalysis(id, currentSignals, scoreFrom(currentSignals), RUBRIC_VERSION);
+      processed += 1;
+      touchedDays.add(localDayKey(new Date(capturedAt)));
+      continue;
+    }
+
     const bytes = await snapshotThumbnailBytes(id);
     if (!bytes) {
       await stampRubricVersion(id, RUBRIC_VERSION);

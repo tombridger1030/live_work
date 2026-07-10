@@ -1,8 +1,8 @@
 export const freshSnapshotMinutes = 40;
 
-// Minutes between captures = launchd StartInterval (300s) / 60. Each scored
-// snapshot stands for this much elapsed time, so "hours present" = present
-// snapshots × this ÷ 60. MUST match agent/com.tombridger.work-live.plist.
+// Minutes between captures = the plist's every-5-minutes calendar schedule.
+// Each scored snapshot stands for this much elapsed time, so "hours present" =
+// present snapshots × this ÷ 60. MUST match agent/com.tombridger.work-live.plist.
 export const captureIntervalMinutes = 5;
 
 export function appTimeZone(): string {
@@ -42,6 +42,10 @@ export function localHour(date: Date, timeZone = appTimeZone()): number {
   return Number(hour === "24" ? "0" : hour);
 }
 
+function localMinute(date: Date, timeZone = appTimeZone()): number {
+  return Number(new Intl.DateTimeFormat("en-US", { timeZone, minute: "numeric" }).format(date));
+}
+
 export function previousHourWindow(now = new Date()): { start: Date; end: Date } {
   const end = new Date(now);
   end.setMinutes(0, 0, 0);
@@ -58,6 +62,19 @@ export const quietHourEnd = 8;
 
 export function isQuietHour(hour: number): boolean {
   return hour >= quietHourStart && hour < quietHourEnd;
+}
+
+// Minutes elapsed since the most recent morning capture start (quietHourEnd,
+// 8am local). Hours before 8am (the past-midnight tail plus the quiet window)
+// belong to the PREVIOUS working day, so their morning is yesterday's 8am and
+// overnight away streaks stay intact. This is the daily AFK reset boundary:
+// capture cadence never carries an away streak across it, so a fresh morning
+// always starts at the 5-minute cadence no matter how long the machine sat
+// idle or off the days before.
+export function minutesSinceMorningStart(now = new Date(), timeZone = appTimeZone()): number {
+  const hour = localHour(now, timeZone);
+  const dayHour = hour >= quietHourEnd ? hour : hour + 24;
+  return (dayHour - quietHourEnd) * 60 + localMinute(now, timeZone);
 }
 
 export function isQuietNow(now = new Date(), timeZone = appTimeZone()): boolean {

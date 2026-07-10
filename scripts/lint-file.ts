@@ -24,7 +24,7 @@ async function collectFiles(target: string): Promise<string[]> {
     return checkedExtensions.has(path.extname(target)) ? [target] : [];
   }
 
-  const ignored = new Set([".next", ".work-live", "node_modules"]);
+  const ignored = new Set([".agents", ".next", ".work-live", "node_modules"]);
   const entries = await readdir(target, { withFileTypes: true });
   const files = await Promise.all(
     entries

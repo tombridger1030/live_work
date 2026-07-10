@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "@heroui/styles/css";
+@import "tw-animate-css";
 
 @theme {
   --color-background: oklch(1 0 0);
@@ -78,5 +79,39 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+  /* Tailwind v4 dropped the preflight `button { cursor: pointer }`, so buttons
+     fall back to the arrow cursor. Restore the pointer for enabled interactive
+     elements (disabled ones — e.g. future-day cells — keep the default). */
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  [role="tab"]:not(:disabled),
+  [role="option"]:not([aria-disabled="true"]),
+  summary {
+    cursor: pointer;
+  }
+}
+
+/* Recharts focuses its surface/bars on click, which paints the browser's default
+   blue outline box. Suppress it everywhere a chart renders — selection is shown
+   by our own ▲ marker, not a focus ring. */
+.recharts-wrapper,
+.recharts-surface,
+.recharts-wrapper:focus,
+.recharts-surface:focus,
+.recharts-wrapper *:focus,
+.recharts-surface *:focus,
+.recharts-wrapper *:focus-visible,
+.recharts-surface *:focus-visible {
+  outline: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

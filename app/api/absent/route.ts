@@ -15,9 +15,10 @@ function clientKey(request: Request): string {
 
 /**
  * Records an "away" (score 0) snapshot when the capture agent could not open the
- * camera — e.g. the external webcam is unplugged, which means the owner is away
- * from the setup. Keeps the timeline continuous instead of leaving a gap. Owner-
- * authed, and like capture it respects pause and quiet hours.
+ * camera — the external webcam is disconnected, meaning the owner is not at the
+ * Mac setup (gaming on PC, away from desk, etc.). Keeps the first away ticks on
+ * the timeline, then lets AFK cadence thin redundant repeats instead of leaving
+ * a gap. Owner-authed, and like capture it respects pause and quiet hours.
  */
 export async function POST(request: Request): Promise<Response> {
   if (!isBearerAuthorized(request, getOptionalEnv("OWNER_SECRET"))) {
@@ -40,8 +41,11 @@ export async function POST(request: Request): Promise<Response> {
     return jsonError("Capture closed (quiet hours)", 423);
   }
 
-  const snapshot = await saveAbsentSnapshot();
-  const checkin = await rollupCurrentHour(new Date(snapshot.capturedAt));
+  const result = await saveAbsentSnapshot();
+  if (!result.stored || !result.snapshot) {
+    return Response.json({ stored: false, score: result.score.score, status: result.score.status });
+  }
+  const checkin = await rollupCurrentHour(new Date(result.snapshot.capturedAt));
   revalidateCaptures();
-  return Response.json({ id: snapshot.id, score: snapshot.score, status: snapshot.status, checkin });
+  return Response.json({ stored: true, id: result.snapshot.id, score: result.snapshot.score, status: result.snapshot.status, checkin });
 }

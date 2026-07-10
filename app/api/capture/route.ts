@@ -1,7 +1,7 @@
 import { revalidateCaptures } from "@/lib/cache";
 import { getOptionalEnv } from "@/lib/env";
 import { isBearerAuthorized, jsonError } from "@/lib/auth";
-import { frameFromRequest, saveFrameSnapshot } from "@/lib/capture-pipeline";
+import { captureUploadFromRequest, saveFrameSnapshot, type CaptureUpload } from "@/lib/capture-pipeline";
 import { checkCaptureRateLimit } from "@/lib/rate-limit";
 import { getSettings } from "@/lib/store";
 import { isQuietNow } from "@/lib/time";
@@ -40,23 +40,32 @@ export async function POST(request: Request): Promise<Response> {
     return jsonError("Capture closed (quiet hours)", 423);
   }
 
-  let frame: Uint8Array | null;
+  let capture: CaptureUpload | null;
   try {
-    frame = await frameFromRequest(request);
+    capture = await captureUploadFromRequest(request, "agent");
   } catch (error) {
     return jsonError((error as Error).message, 413);
   }
-  if (!frame) {
+  if (!capture) {
     return jsonError("Missing frame", 400);
   }
 
   try {
-    const snapshot = await saveFrameSnapshot(frame, settings);
+    const result = await saveFrameSnapshot(capture, settings);
+    const liveness =
+      capture.source === "agent" && result.liveness
+        ? { livenessStatus: result.liveness.status, livenessScore: result.liveness.score }
+        : {};
+    if (!result.stored || !result.snapshot) {
+      return Response.json({ stored: false, score: result.score.score, status: result.score.status, ...liveness });
+    }
     revalidateCaptures(); // refresh cached dashboard reads
     return Response.json({
-      id: snapshot.id,
-      score: snapshot.score,
-      status: snapshot.status
+      stored: true,
+      id: result.snapshot.id,
+      score: result.snapshot.score,
+      status: result.snapshot.status,
+      ...liveness
     });
   } catch (error) {
     if (error instanceof VisionAnalysisError) {
