@@ -6,6 +6,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, useTransition } from "r
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { Sparkles, X } from "lucide-react";
 import { LedgerDayReport } from "@/components/LedgerDayReport";
+import { WeeklyGoalsEditor } from "@/components/WeeklyGoalsEditor";
 import type { SaveState } from "@/components/LedgerDayReport";
 import { Num } from "@/components/Num";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -79,6 +80,7 @@ export function Ledger({ data }: LedgerProps) {
   const [repliesState, setRepliesState] = useState<Record<string, SaveState>>({});
   const [meetingsState, setMeetingsState] = useState<Record<string, SaveState>>({});
   const [breatheDay, setBreatheDay] = useState<string | null>(null);
+  const [sessionRequired, setSessionRequired] = useState(false);
   const [intro, setIntro] = useState(true);
   const [isWide, setIsWide] = useState(false);
   const reachoutTimers = useRef<Record<string, number>>({});
@@ -229,10 +231,14 @@ export function Ledger({ data }: LedgerProps) {
         const merges = elapsed.reduce((sum, day) => sum + day.merges, 0);
         const replyRate = reachouts > 0 ? replies / reachouts : 0;
         const bookingRate = replies > 0 ? meetings / replies : 0;
-        const progress = weeklyProgress(reachouts, hours, features);
+        const progress = weeklyProgress(reachouts, hours, features, {
+          reachouts: week.reachoutsTarget,
+          hours: week.hoursTarget,
+          features: data.targets.weeklyFeatures
+        });
         return { ...week, days, reachouts, hours, features, replies, meetings, commits, merges, replyRate, bookingRate, ...progress };
       }),
-    [data.weeks, viewDayMap]
+    [data.targets.weeklyFeatures, data.weeks, viewDayMap]
   );
 
   const weekdayAverages = useMemo(() => {
@@ -273,11 +279,26 @@ export function Ledger({ data }: LedgerProps) {
           weeklyValue: week.weeklyValue,
           reachouts: week.reachouts,
           hours: week.hours,
-          features: week.features
+          features: week.features,
+          reachoutsTarget: week.reachoutsTarget,
+          hoursTarget: week.hoursTarget,
+          featuresTarget: data.targets.weeklyFeatures
+        })),
+    [data.targets.weeklyFeatures, viewWeeks]
+  );
+
+  const goalWeeks = useMemo(
+    () =>
+      viewWeeks
+        .filter((week) => week.days.some((day) => day.inRange))
+        .map((week) => ({
+          weekStart: week.weekStart,
+          label: week.label,
+          reachoutsTarget: week.reachoutsTarget,
+          hoursTarget: week.hoursTarget
         })),
     [viewWeeks]
   );
-
   const selectedDayData = viewDayMap.get(selectedDay) ?? null;
   const currentWeek = viewWeeks.find((week) => week.days.some((day) => day.day === data.today)) ?? viewWeeks[viewWeeks.length - 1] ?? null;
   const summaryWeek = currentWeek;
@@ -306,6 +327,47 @@ export function Ledger({ data }: LedgerProps) {
       body: JSON.stringify({ day, ...body })
     });
     if (!response.ok) {
+      if (response.status === 401) {
+        setSessionRequired(true);
+        throw new Error("AUTH_REQUIRED");
+      }
+      let message = "Could not save.";
+      try {
+        const payload = (await response.json()) as { error?: string };
+        if (payload.error) {
+          message = payload.error;
+        }
+      } catch {
+        // Keep the generic message when the server response isn't JSON.
+      }
+      throw new Error(message);
+    }
+    startTransition(() => router.refresh());
+  }
+
+  async function authenticateOwner(secret: string) {
+    const response = await fetch("/api/ledger/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret })
+    });
+    if (!response.ok) {
+      throw new Error("AUTH_FAILED");
+    }
+    setSessionRequired(false);
+  }
+
+  async function persistWeeklyGoal(weekStart: string, reachouts: number, hours: number) {
+    const response = await fetch("/api/ledger", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ weekStart, weeklyReachouts: reachouts, weeklyHours: hours })
+    });
+    if (!response.ok) {
+      if (response.status === 401) {
+        setSessionRequired(true);
+        throw new Error("AUTH_REQUIRED");
+      }
       let message = "Could not save.";
       try {
         const payload = (await response.json()) as { error?: string };
@@ -451,8 +513,8 @@ export function Ledger({ data }: LedgerProps) {
 
   const summaryStats = summaryWeek
     ? [
-        { label: "Reachouts", value: summaryWeek.reachouts, target: data.targets.weeklyReachouts, pct: summaryWeek.reachoutsPct, accent: "from-blue-400/80 to-sky-300/90" },
-        { label: "Hours", value: summaryWeek.hours, target: data.targets.weeklyHours, pct: summaryWeek.hoursPct, accent: "from-teal-400/80 to-emerald-300/90" },
+        { label: "Messages", value: summaryWeek.reachouts, target: summaryWeek.reachoutsTarget, pct: summaryWeek.reachoutsPct, accent: "from-blue-400/80 to-sky-300/90" },
+        { label: "Hours", value: summaryWeek.hours, target: summaryWeek.hoursTarget, pct: summaryWeek.hoursPct, accent: "from-teal-400/80 to-emerald-300/90" },
         { label: "Features", value: summaryWeek.features, target: data.targets.weeklyFeatures, pct: summaryWeek.featuresPct, accent: "from-fuchsia-400/80 to-pink-300/90" }
       ]
     : [];
@@ -547,6 +609,15 @@ export function Ledger({ data }: LedgerProps) {
             </p>
           </section>
         ) : null}
+        {summaryWeek ? (
+          <WeeklyGoalsEditor
+            weeks={goalWeeks}
+            initialWeekStart={summaryWeek.weekStart}
+            sessionRequired={sessionRequired}
+            onSave={persistWeeklyGoal}
+            onAuthenticate={authenticateOwner}
+          />
+        ) : null}
 
         <section className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.25)] sm:p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -574,7 +645,6 @@ export function Ledger({ data }: LedgerProps) {
             dailyRows={dailyRows}
             weeklyRows={weeklyRows}
             selectedDay={selectedDay}
-            weeklyTargets={{ reachouts: data.targets.weeklyReachouts, hours: data.targets.weeklyHours, features: data.targets.weeklyFeatures }}
             reduceMotion={reduceMotion}
             intro={intro}
           />

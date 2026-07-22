@@ -1,6 +1,10 @@
+import { isOwnerSessionAuthorized, jsonError } from "@/lib/auth";
 import { getLedgerData } from "@/lib/ledger-server";
-import { setLedgerEntry } from "@/lib/store";
-import { localDayKey } from "@/lib/time";
+import { setLedgerEntry, setWeeklyGoal } from "@/lib/store";
+import { getOptionalEnv } from "@/lib/env";
+import { validateWeeklyGoal } from "@/lib/weekly-goal";
+import { isValidDayKey, localDayKey, weekStartForDay } from "@/lib/time";
+
 
 export const dynamic = "force-dynamic";
 
@@ -10,11 +14,44 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  if (!isOwnerSessionAuthorized(request, getOptionalEnv("OWNER_SECRET"))) {
+    return jsonError("Unauthorized", 401);
+  }
+
+  let body: Record<string, unknown>;
   try {
-    const body = await request.json();
+    const parsed: unknown = await request.json();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return jsonError("Invalid JSON", 400);
+    }
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return jsonError("Invalid JSON", 400);
+  }
+
+  try {
+    // Goal edits use a Monday key and are intentionally separate from day logging
+    // so a request cannot partially update both contracts.
+    if (body.weekStart !== undefined) {
+      const weekStart = body.weekStart;
+      const weeklyReachouts = body.weeklyReachouts;
+      const weeklyHours = body.weeklyHours;
+      const currentMonday = weekStartForDay(localDayKey(new Date()));
+      const validation = validateWeeklyGoal(weekStart, weeklyReachouts, weeklyHours);
+      if (body.day !== undefined || !validation.ok || typeof weekStart !== "string" || weekStart > currentMonday) {
+        return Response.json({ error: !validation.ok ? validation.error : "weekStart must be a displayed Monday week" }, { status: 400 });
+      }
+      const displayed = (await getLedgerData(new Date())).weeks.some((week) => week.weekStart === weekStart);
+      if (!displayed) {
+        return Response.json({ error: "weekStart must be a displayed Monday week" }, { status: 400 });
+      }
+      const goal = await setWeeklyGoal(weekStart, weeklyReachouts as number, weeklyHours as number);
+      return Response.json({ goal });
+    }
+
     const day = body.day as string;
 
-    if (!day || typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    if (typeof day !== "string" || !isValidDayKey(day)) {
       return Response.json({ error: "day must be YYYY-MM-DD" }, { status: 400 });
     }
 
@@ -69,7 +106,8 @@ export async function POST(request: Request) {
 
     const entry = await setLedgerEntry(day, fields);
     return Response.json({ entry });
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+  } catch (error) {
+    console.error("[ledger] mutation failed", error);
+    return jsonError("Unable to save ledger change", 500);
   }
 }

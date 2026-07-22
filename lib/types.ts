@@ -107,6 +107,14 @@ export type LedgerEntry = {
   commits: number; // auto: commits to the build repo that day, >= 0
   merges: number; // auto: merged PRs to the build repo that day, >= 0
 };
+// Effective-dated weekly goals. A row keyed by Monday applies from that week
+// forward until the next saved row; earlier weeks never inherit a later goal.
+export type WeeklyGoal = {
+  weekStart: string; // Monday YYYY-MM-DD
+  reachouts: number; // weekly messages goal, >= 1
+  hours: number; // weekly hours goal, > 0
+};
+
 
 // One line of the two-way nudge conversation: an outbound bot buzz ("out") or an
 // inbound owner reply ("in"). `kind` tags the type (8am/away/checkpoint/reply/

@@ -1,5 +1,5 @@
 import { captureIntervalMinutes } from "@/lib/time";
-import type { LedgerEntry, NudgeMessage } from "@/lib/types";
+import type { LedgerEntry, NudgeMessage, WeeklyGoal } from "@/lib/types";
 
 // The Ledger: a recent, week-grouped history (Monday → Sunday) with weekly
 // targets. We only build the weeks that actually contain elapsed days, capped to
@@ -10,6 +10,18 @@ export const WEEKLY_HOURS_TARGET = 70;
 export const WEEKLY_FEATURE_TARGET = 7;
 export const DAILY_REACHOUT_REFERENCE = WEEKLY_REACHOUT_TARGET / 7;
 export const DAILY_HOURS_REFERENCE = WEEKLY_HOURS_TARGET / 7;
+
+export type WeeklyTargets = {
+  reachouts: number;
+  hours: number;
+  features: number;
+};
+
+const DEFAULT_WEEKLY_TARGETS: WeeklyTargets = {
+  reachouts: WEEKLY_REACHOUT_TARGET,
+  hours: WEEKLY_HOURS_TARGET,
+  features: WEEKLY_FEATURE_TARGET
+};
 
 const monthDayFormat = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
 const weekdayFormat = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short" });
@@ -55,6 +67,8 @@ export type LedgerWeek = {
   hoursPct: number;
   featuresPct: number;
   weeklyValue: number;
+  reachoutsTarget: number;
+  hoursTarget: number;
   days: LedgerDay[];
 };
 
@@ -64,8 +78,6 @@ export type LedgerData = {
   today: string;
   todayIndex: number | null;
   targets: {
-    weeklyReachouts: 250;
-    weeklyHours: 70;
     weeklyFeatures: 7;
     dailyReachoutReference: number;
     dailyHoursReference: number;
@@ -108,13 +120,35 @@ export function dailyValue(reachouts: number, hours: number, featureDone: boolea
     (featureDone ? 1 : 0) * 0.3
   ));
 }
-export function weeklyValue(reachouts: number, hours: number, features: number): number {
-  return weeklyProgress(reachouts, hours, features).weeklyValue;
+/**
+ * Resolves the latest effective-dated goal at or before a Monday week start.
+ * The default applies until the first saved goal; input order is irrelevant.
+ */
+export function resolveWeeklyGoal(weekStart: string, goals: WeeklyGoal[]): WeeklyTargets {
+  let resolved = DEFAULT_WEEKLY_TARGETS;
+  let latestWeekStart: string | null = null;
+  for (const goal of goals) {
+    if (goal.weekStart <= weekStart && (latestWeekStart === null || goal.weekStart > latestWeekStart)) {
+      resolved = { reachouts: goal.reachouts, hours: goal.hours, features: WEEKLY_FEATURE_TARGET };
+      latestWeekStart = goal.weekStart;
+    }
+  }
+  return resolved;
 }
-export function weeklyProgress(reachouts: number, hours: number, features: number) {
-  const reachoutsPct = Math.min(1, reachouts / WEEKLY_REACHOUT_TARGET);
-  const hoursPct = Math.min(1, hours / WEEKLY_HOURS_TARGET);
-  const featuresPct = Math.min(1, features / WEEKLY_FEATURE_TARGET);
+
+export function weeklyValue(reachouts: number, hours: number, features: number, targets: WeeklyTargets = DEFAULT_WEEKLY_TARGETS): number {
+  return weeklyProgress(reachouts, hours, features, targets).weeklyValue;
+}
+
+export function weeklyProgress(
+  reachouts: number,
+  hours: number,
+  features: number,
+  targets: WeeklyTargets = DEFAULT_WEEKLY_TARGETS
+) {
+  const reachoutsPct = Math.min(1, reachouts / targets.reachouts);
+  const hoursPct = Math.min(1, hours / targets.hours);
+  const featuresPct = Math.min(1, features / targets.features);
   return {
     reachoutsPct,
     hoursPct,
@@ -143,6 +177,7 @@ export function activeDayStreak(days: { state: DayState; active: boolean }[]): n
 // Mon–Sun, not Sun–Sat).
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+
 // Monday-first weekday index (0 = Mon … 6 = Sun) from a JS UTC day (0 = Sun).
 function mondayIndex(utcDay: number): number {
   return (utcDay + 6) % 7;
@@ -153,7 +188,8 @@ export function assembleLedger(
   entries: Map<string, LedgerEntry>,
   hoursByDay: Map<string, number>,
   today: string,
-  rangeStart: string
+  rangeStart: string,
+  weeklyGoals: WeeklyGoal[] = []
 ): Omit<LedgerData, "messages"> {
   // Messages are added by getLedgerData (it owns the nudge log); assembleLedger
   // has no message data, so it returns everything but that field.
@@ -204,13 +240,13 @@ export function assembleLedger(
   for (const day of ledgerDays) {
     const dow = new Date(`${day.day}T12:00:00Z`).getUTCDay();
     if (dow === 1 && currentWeek.length > 0) {
-      weeks.push(buildWeek(currentWeek));
+      weeks.push(buildWeek(currentWeek, resolveWeeklyGoal(currentWeek[0].day, weeklyGoals)));
       currentWeek = [];
     }
     currentWeek.push(day);
   }
   if (currentWeek.length > 0) {
-    weeks.push(buildWeek(currentWeek));
+    weeks.push(buildWeek(currentWeek, resolveWeeklyGoal(currentWeek[0].day, weeklyGoals)));
   }
 
   const elapsedDays = ledgerDays.filter((d) => d.inRange);
@@ -258,8 +294,6 @@ export function assembleLedger(
     today,
     todayIndex: todayDay?.index ?? null,
     targets: {
-      weeklyReachouts: 250,
-      weeklyHours: 70,
       weeklyFeatures: 7,
       dailyReachoutReference: DAILY_REACHOUT_REFERENCE,
       dailyHoursReference: DAILY_HOURS_REFERENCE
@@ -273,7 +307,7 @@ export function assembleLedger(
   };
 }
 
-function buildWeek(weekDays: LedgerDay[]): LedgerWeek {
+function buildWeek(weekDays: LedgerDay[], targets: WeeklyTargets): LedgerWeek {
   const elapsedDays = weekDays.filter((d) => d.inRange);
   const reachouts = elapsedDays.reduce((sum, d) => sum + d.reachouts, 0);
   const hours = Math.round(elapsedDays.reduce((sum, d) => sum + d.hours, 0) * 10) / 10;
@@ -291,7 +325,7 @@ function buildWeek(weekDays: LedgerDay[]): LedgerWeek {
   const startLabel = weekDays[0].label;
   const endLabel = weekDays[weekDays.length - 1].label;
   const label = `${startLabel}–${endLabel}`;
-  const progress = weeklyProgress(reachouts, hours, features);
+  const progress = weeklyProgress(reachouts, hours, features, targets);
   return {
     weekStart,
     weekEnd,
@@ -309,6 +343,8 @@ function buildWeek(weekDays: LedgerDay[]): LedgerWeek {
     hoursPct: progress.hoursPct,
     featuresPct: progress.featuresPct,
     weeklyValue: progress.weeklyValue,
+    reachoutsTarget: targets.reachouts,
+    hoursTarget: targets.hours,
     days: weekDays
   };
 }

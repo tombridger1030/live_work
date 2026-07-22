@@ -1,14 +1,8 @@
 import { assembleLedger, dayRange, hoursFromPresent, LEDGER_WEEKS } from "@/lib/ledger";
 import type { LedgerData } from "@/lib/ledger";
-import { daysWithData, getLedgerEntries, getRecentNudgeMessages, snapshotCountsByDay } from "@/lib/store";
-import { localDayKey } from "@/lib/time";
+import { daysWithData, getLedgerEntries, getRecentNudgeMessages, getWeeklyGoals, snapshotCountsByDay } from "@/lib/store";
+import { localDayKey, weekStartForDay } from "@/lib/time";
 
-function mondayOf(dayKey: string): string {
-  const at = new Date(`${dayKey}T12:00:00Z`);
-  const daysSinceMonday = (at.getUTCDay() + 6) % 7;
-  at.setUTCDate(at.getUTCDate() - daysSinceMonday);
-  return at.toISOString().slice(0, 10);
-}
 
 function addDays(dayKey: string, count: number): string {
   const at = new Date(`${dayKey}T12:00:00Z`);
@@ -30,9 +24,9 @@ export async function getLedgerData(now = new Date()): Promise<LedgerData> {
   const firstTallyDay = tallyDays.length > 0 ? tallyDays[tallyDays.length - 1] : today;
   const firstDay = firstTallyDay > today ? today : firstTallyDay;
 
-  const currentMonday = mondayOf(today);
+  const currentMonday = weekStartForDay(today);
   const cappedStart = addDays(currentMonday, -(LEDGER_WEEKS - 1) * 7);
-  const firstMonday = mondayOf(firstDay);
+  const firstMonday = weekStartForDay(firstDay);
   // Start at the later of the cap and the first data week, so short histories show
   // from day one and long ones stay capped to the recent quarter.
   const startMonday = cappedStart > firstMonday ? cappedStart : firstMonday;
@@ -41,12 +35,13 @@ export async function getLedgerData(now = new Date()): Promise<LedgerData> {
 
   const allDays = dayRange(startMonday, endSunday);
 
-  const [entriesList, counts] = await Promise.all([
+  const [entriesList, counts, weeklyGoals] = await Promise.all([
     getLedgerEntries(rangeStart, today),
-    snapshotCountsByDay(LEDGER_WEEKS * 7 + 14)
+    snapshotCountsByDay(LEDGER_WEEKS * 7 + 14),
+    getWeeklyGoals()
   ]);
   const entries = new Map(entriesList.map((entry) => [entry.day, entry]));
   const hoursByDay = new Map(counts.map((count) => [count.day, hoursFromPresent(count.present)]));
   const messages = await getRecentNudgeMessages(50);
-  return { ...assembleLedger(allDays, entries, hoursByDay, today, rangeStart), messages };
+  return { ...assembleLedger(allDays, entries, hoursByDay, today, rangeStart, weeklyGoals), messages };
 }

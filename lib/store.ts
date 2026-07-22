@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { DayHistory, HourlyCheckin, LedgerEntry, NudgeMessage, NudgeState, ScoreResult, Settings, Signals, SnapshotRow } from "@/lib/types";
+import type { DayHistory, HourlyCheckin, LedgerEntry, NudgeMessage, NudgeState, ScoreResult, Settings, Signals, SnapshotRow, WeeklyGoal } from "@/lib/types";
 import { appTimeZone, isQuietHour, isScoringHour, localDayKey, localHour, quietHourEnd, quietHourStart, scoringEndHour, scoringStartHour } from "@/lib/time";
 import { RUBRIC_VERSION } from "@/lib/score";
 import { correctableFields, type CorrectableField } from "@/lib/feedback";
+import { validateWeeklyGoal } from "@/lib/weekly-goal";
 
 type SaveSnapshotInput = {
   capturedAt?: Date;
@@ -27,6 +28,7 @@ type LocalState = {
   snapshots: SnapshotRow[];
   hourlyCheckins: HourlyCheckin[];
   scoreboardEntries: LedgerEntry[];
+  weeklyGoals: WeeklyGoal[];
   nudgeMessages: NudgeMessage[];
   settings: Settings;
 };
@@ -51,6 +53,7 @@ function defaultState(): LocalState {
     snapshots: [],
     hourlyCheckins: [],
     scoreboardEntries: [],
+    weeklyGoals: [],
     nudgeMessages: [],
     settings: {
       paused: false,
@@ -76,6 +79,7 @@ async function readLocalState(): Promise<LocalState> {
     ...state,
     hourlyCheckins: state.hourlyCheckins.map(normalizeCheckin),
     scoreboardEntries: state.scoreboardEntries ?? [],
+    weeklyGoals: state.weeklyGoals ?? [],
     nudgeMessages: state.nudgeMessages ?? []
   };
 }
@@ -207,6 +211,16 @@ async function sqlClient() {
     await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS commits INTEGER NOT NULL DEFAULT 0 CHECK (commits >= 0)`;
     await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS merges INTEGER NOT NULL DEFAULT 0 CHECK (merges >= 0)`;
     await sql`
+      CREATE TABLE IF NOT EXISTS weekly_goals (
+        week_start DATE PRIMARY KEY,
+        reachouts INTEGER NOT NULL CHECK (reachouts >= 1),
+        hours DOUBLE PRECISION NOT NULL CHECK (hours >= 0.1),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `;
+    await sql`ALTER TABLE weekly_goals DROP CONSTRAINT IF EXISTS weekly_goals_hours_check`;
+    await sql`ALTER TABLE weekly_goals ADD CONSTRAINT weekly_goals_hours_check CHECK (hours >= 0.1)`;
+    await sql`
       CREATE TABLE IF NOT EXISTS nudge_messages (
         id TEXT PRIMARY KEY,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -265,6 +279,14 @@ function mapLedgerEntry(row: Record<string, unknown>): LedgerEntry {
     meetings: Number(row.meetings),
     commits: Number(row.commits),
     merges: Number(row.merges)
+  };
+}
+
+function mapWeeklyGoal(row: Record<string, unknown>): WeeklyGoal {
+  return {
+    weekStart: String(row.week_start).slice(0, 10),
+    reachouts: Number(row.reachouts),
+    hours: Number(row.hours)
   };
 }
 
@@ -1103,6 +1125,7 @@ export async function appendNudgeMessage(m: { direction: "out" | "in"; kind: str
     await sql`
       INSERT INTO nudge_messages (id, direction, kind, text)
       VALUES (${randomUUID()}, ${m.direction}, ${m.kind}, ${m.text})
+
     `;
     return;
   }
@@ -1117,6 +1140,61 @@ export async function appendNudgeMessage(m: { direction: "out" | "in"; kind: str
       text: m.text
     });
     state.nudgeMessages = messages;
+  });
+}
+/**
+ * Loads all effective-dated weekly goals in ascending week order. The resolver
+ * needs rows before the visible ledger window so an older goal can flow into the
+ * first displayed week without being mistaken for the default.
+ */
+export async function getWeeklyGoals(): Promise<WeeklyGoal[]> {
+  if (hasPostgresConfig()) {
+    const sql = await sqlClient();
+    const result = await sql`
+      SELECT to_char(week_start, 'YYYY-MM-DD') AS week_start, reachouts, hours
+      FROM weekly_goals ORDER BY week_start
+    `;
+    return result.rows.map(mapWeeklyGoal);
+  }
+
+  const state = await readLocalState();
+  return (state.weeklyGoals ?? []).slice().sort((left, right) => left.weekStart.localeCompare(right.weekStart));
+}
+
+/**
+ * Saves one effective-dated weekly goal. The row applies from `weekStart`
+ * forward until a later row; no other week row is changed.
+ *
+ * Preconditions: `weekStart` is a Monday YYYY-MM-DD, `reachouts` is an integer
+ * >= 1, and `hours` is finite and >= 0.1. Postcondition: a subsequent
+ * `getWeeklyGoals` returns the supplied values for exactly that week.
+ */
+export async function setWeeklyGoal(weekStart: string, reachouts: number, hours: number): Promise<WeeklyGoal> {
+  const validation = validateWeeklyGoal(weekStart, reachouts, hours);
+  if (!validation.ok) {
+    throw new Error(validation.error);
+  }
+  const goal = { weekStart, reachouts, hours };
+  if (hasPostgresConfig()) {
+    const sql = await sqlClient();
+    const result = await sql`
+      INSERT INTO weekly_goals (week_start, reachouts, hours, updated_at)
+      VALUES (${weekStart}, ${reachouts}, ${hours}, now())
+      ON CONFLICT (week_start) DO UPDATE SET
+        reachouts = EXCLUDED.reachouts,
+        hours = EXCLUDED.hours,
+        updated_at = now()
+      RETURNING to_char(week_start, 'YYYY-MM-DD') AS week_start, reachouts, hours
+    `;
+    return mapWeeklyGoal(result.rows[0]);
+  }
+
+  return withLocalState((state) => {
+    const goals = state.weeklyGoals ?? [];
+    state.weeklyGoals = [...goals.filter((entry) => entry.weekStart !== weekStart), goal].sort((left, right) =>
+      left.weekStart.localeCompare(right.weekStart)
+    );
+    return goal;
   });
 }
 

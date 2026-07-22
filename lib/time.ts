@@ -33,6 +33,28 @@ export function localDayKey(date: Date, timeZone = appTimeZone()): string {
   return `${year}-${month}-${day}`;
 }
 
+/** Returns true only for a real UTC calendar day key. */
+export function isValidDayKey(dayKey: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
+    return false;
+  }
+  const at = new Date(`${dayKey}T12:00:00Z`);
+  return !Number.isNaN(at.getTime()) && at.toISOString().slice(0, 10) === dayKey;
+}
+
+/** Returns the UTC Monday key for a normalized YYYY-MM-DD day key. */
+export function weekStartForDay(dayKey: string): string {
+  const at = new Date(`${dayKey}T12:00:00Z`);
+  const daysSinceMonday = (at.getUTCDay() + 6) % 7;
+  at.setUTCDate(at.getUTCDate() - daysSinceMonday);
+  return at.toISOString().slice(0, 10);
+}
+
+/** Returns true only for a real calendar Monday key. */
+export function isMondayWeekStart(dayKey: string): boolean {
+  return isValidDayKey(dayKey) && weekStartForDay(dayKey) === dayKey;
+}
+
 export function localHour(date: Date, timeZone = appTimeZone()): number {
   const hour = new Intl.DateTimeFormat("en-US", {
     timeZone,

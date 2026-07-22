@@ -27,6 +27,9 @@ type WeeklyRow = {
   reachouts: number;
   hours: number;
   features: number;
+  reachoutsTarget: number;
+  hoursTarget: number;
+  featuresTarget: number;
 };
 
 type LedgerChartsProps = {
@@ -34,7 +37,6 @@ type LedgerChartsProps = {
   dailyRows: DailyRow[];
   weeklyRows: WeeklyRow[];
   selectedDay: string;
-  weeklyTargets: { reachouts: number; hours: number; features: number };
   reduceMotion: boolean;
   intro: boolean;
 };
@@ -46,7 +48,7 @@ const chartMargin = { top: 10, right: 8, bottom: 0, left: 4 };
 // Lazy-loaded chart surfaces for the Ledger. One card, two modes: a clean daily
 // score line (centered points, no grouped bars) and a weekly score bar whose
 // tooltip spells out goal progress. Kept out of SSR so the board stays stable.
-export function LedgerCharts({ mode, dailyRows, weeklyRows, selectedDay, weeklyTargets, reduceMotion, intro }: LedgerChartsProps) {
+export function LedgerCharts({ mode, dailyRows, weeklyRows, selectedDay, reduceMotion, intro }: LedgerChartsProps) {
   if (mode === "weekly") {
     return (
       <div className="h-[230px]">
@@ -70,9 +72,9 @@ export function LedgerCharts({ mode, dailyRows, weeklyRows, selectedDay, weeklyT
                     <p className="font-medium text-zinc-100">{week.label}</p>
                     <div className="mt-2 space-y-1 text-zinc-400">
                       <div className="flex justify-between gap-6"><span>Score</span><span className="font-mono text-zinc-100">{week.weeklyValue}</span></div>
-                      <div className="flex justify-between gap-6"><span>Reachouts</span><span className="font-mono text-zinc-100">{week.reachouts}/{weeklyTargets.reachouts}</span></div>
-                      <div className="flex justify-between gap-6"><span>Hours</span><span className="font-mono text-zinc-100">{week.hours.toFixed(1)}/{weeklyTargets.hours}</span></div>
-                      <div className="flex justify-between gap-6"><span>Features</span><span className="font-mono text-zinc-100">{week.features}/{weeklyTargets.features}</span></div>
+                      <div className="flex justify-between gap-6"><span>Messages</span><span className="font-mono text-zinc-100">{week.reachouts}/{week.reachoutsTarget}</span></div>
+                      <div className="flex justify-between gap-6"><span>Hours</span><span className="font-mono text-zinc-100">{week.hours.toFixed(1)}/{week.hoursTarget}</span></div>
+                      <div className="flex justify-between gap-6"><span>Features</span><span className="font-mono text-zinc-100">{week.features}/{week.featuresTarget}</span></div>
                     </div>
                   </div>
                 );

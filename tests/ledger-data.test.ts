@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { assembleLedger, dailyValue, hoursFromPresent, dayRange, activeDayStreak, DAILY_REACHOUT_REFERENCE, DAILY_HOURS_REFERENCE, WEEKLY_REACHOUT_TARGET, WEEKLY_HOURS_TARGET, WEEKLY_FEATURE_TARGET } from "@/lib/ledger";
-import type { LedgerEntry } from "@/lib/types";
+import { assembleLedger, dailyValue, hoursFromPresent, dayRange, activeDayStreak, resolveWeeklyGoal, DAILY_REACHOUT_REFERENCE, DAILY_HOURS_REFERENCE, WEEKLY_REACHOUT_TARGET, WEEKLY_HOURS_TARGET, WEEKLY_FEATURE_TARGET } from "@/lib/ledger";
+import type { LedgerEntry, WeeklyGoal } from "@/lib/types";
 
 test("dayRange returns inclusive consecutive days", () => {
   // 2026-06-22 is a Monday, 2026-06-28 the following Sunday.
@@ -62,6 +62,40 @@ test("assembleLedger aggregates Monday-through-Sunday weekly goals", () => {
   // Board columns run Monday → Sunday.
   expect(data.weekdayAverages[0].weekday).toBe("Mon");
   expect(data.weekdayAverages[6].weekday).toBe("Sun");
+});
+
+test("weekly targets stay historical while unsaved gaps inherit the latest earlier goal", () => {
+  const days = dayRange("2026-06-22", "2026-07-12");
+  const entries = new Map<string, LedgerEntry>();
+  const hoursByDay = new Map<string, number>();
+  for (const day of days) {
+    entries.set(day, { day, reachouts: 0, featureDone: false, replies: 0, meetings: 0, commits: 0, merges: 0 });
+  }
+  for (const [day, reachouts, hours] of [
+    ["2026-06-24", 100, 40 / 7],
+    ["2026-07-01", 125, 50 / 7],
+    ["2026-07-08", 200, 80 / 7]
+  ] as const) {
+    entries.set(day, { ...entries.get(day)!, reachouts });
+    const weekStart = day === "2026-06-24" ? "2026-06-22" : day === "2026-07-01" ? "2026-06-29" : "2026-07-06";
+    for (const weekDay of dayRange(weekStart, `${weekStart === "2026-06-22" ? "2026-06-28" : weekStart === "2026-06-29" ? "2026-07-05" : "2026-07-12"}`)) {
+      hoursByDay.set(weekDay, hours);
+    }
+  }
+  const goals: WeeklyGoal[] = [
+    { weekStart: "2026-06-22", reachouts: 100, hours: 40 },
+    { weekStart: "2026-06-29", reachouts: 125, hours: 50 },
+    { weekStart: "2026-07-06", reachouts: 200, hours: 80 }
+  ];
+  const data = assembleLedger(days, entries, hoursByDay, "2026-07-12", "2026-06-22", goals);
+
+  expect(data.weeks.map((week) => [week.reachoutsTarget, week.hoursTarget, week.reachoutsPct, week.hoursPct])).toEqual([
+    [100, 40, 1, 1],
+    [125, 50, 1, 1],
+    [200, 80, 1, 1]
+  ]);
+  expect(resolveWeeklyGoal("2026-07-13", [goals[2], goals[0]])).toEqual({ reachouts: 200, hours: 80, features: 7 });
+  expect(resolveWeeklyGoal("2026-07-01", [goals[2], goals[0]])).toEqual({ reachouts: 100, hours: 40, features: 7 });
 });
 
 test("assembleLedger keeps raw goals visible while using dailyValue for color/trends", () => {
