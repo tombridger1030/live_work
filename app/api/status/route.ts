@@ -23,7 +23,7 @@ export async function GET(): Promise<Response> {
     },
     {
       headers: {
-        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+        "Cache-Control": "public, s-maxage=15, stale-while-revalidate=30"
       }
     }
   );

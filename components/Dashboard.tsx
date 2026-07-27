@@ -300,7 +300,11 @@ export function Dashboard({ data }: { data: DashboardData }) {
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pageshow", onPageShow);
-    const interval = setInterval(() => void refreshFromStatus(), 5_000);
+    // Captures land at most every 5 minutes, so a 5s poll bought nothing and cost
+    // a lot: self-hosted there is no CDN in front of the tunnel, so every tick
+    // hits the Mac and re-parses the whole JSON store. Focus/visibility/pageshow
+    // above still refresh instantly, which is what actually feels responsive.
+    const interval = setInterval(() => void refreshFromStatus(), 30_000);
     void refreshFromStatus();
 
     return () => {

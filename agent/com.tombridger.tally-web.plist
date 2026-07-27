@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tombridger.tally-web</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>/Users/tombridger/Developer/live_work/agent/run-web.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Long-running server: relaunch if it exits (crash, OOM, or a restart after
+       a rebuild). launchd applies a 10s backoff, so a misconfig won't hot-loop. -->
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Data root lives on the expansion drive, off the boot volume (which is 94%
+       full) and off the SD card. Writing here requires macOS Full Disk Access for
+       the bun binary that launchd spawns — without it every write fails with
+       "Operation not permitted" (TCC protects removable volumes).
+       Set here rather than only in .env.local because lib/store.ts resolves the
+       data root at module load, so it must be in the process env at start. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WORK_LIVE_DATA_DIR</key>
+    <string>/Volumes/Expansion/work-live</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/tally-web.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/tally-web.err.log</string>
+</dict>
+</plist>
