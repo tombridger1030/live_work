@@ -1,5 +1,5 @@
-import { getOptionalEnv, isProductionLike } from "@/lib/env";
-import { sql } from "@vercel/postgres";
+import { getOptionalEnv } from "@/lib/env";
+import { sql } from "@/lib/sql";
 
 type Bucket = {
   windowStart: number;
@@ -13,28 +13,54 @@ export type RateLimitResult = {
   retryAfterSeconds?: number;
 };
 
-export function checkCaptureRateLimit(key: string, now = Date.now()): RateLimitResult {
-  const limit = Number(process.env.CAPTURE_RATE_LIMIT_PER_HOUR || 6);
+const HOUR_MS = 60 * 60 * 1000;
+
+// One fixed-window implementation for the in-memory limiters, so window
+// semantics can't drift between capture and feedback.
+function checkHourlyBudget(store: Map<string, Bucket>, key: string, limit: number, now: number): RateLimitResult {
   if (!Number.isFinite(limit) || limit <= 0) {
     return { allowed: true };
   }
 
-  const hourMs = 60 * 60 * 1000;
-  const existing = buckets.get(key);
-  if (!existing || now - existing.windowStart >= hourMs) {
-    buckets.set(key, { windowStart: now, hits: 1 });
+  const existing = store.get(key);
+  if (!existing || now - existing.windowStart >= HOUR_MS) {
+    store.set(key, { windowStart: now, hits: 1 });
     return { allowed: true };
   }
 
   if (existing.hits >= limit) {
     return {
       allowed: false,
-      retryAfterSeconds: Math.ceil((existing.windowStart + hourMs - now) / 1000)
+      retryAfterSeconds: Math.ceil((existing.windowStart + HOUR_MS - now) / 1000)
     };
   }
 
   existing.hits += 1;
   return { allowed: true };
+}
+
+export function checkCaptureRateLimit(key: string, now = Date.now()): RateLimitResult {
+  return checkHourlyBudget(buckets, key, Number(process.env.CAPTURE_RATE_LIMIT_PER_HOUR || 6), now);
+}
+
+const feedbackBuckets = new Map<string, Bucket>();
+
+/**
+ * Bounds signal corrections. Defence in depth: the route is owner-authenticated,
+ * so this exists to cap the damage a stolen session cookie could do to the public
+ * accountability record and to the `human_verified` rows the eval and the
+ * vision-model benchmark treat as ground truth. Deliberately keyed by a CONSTANT
+ * rather than client IP — an attacker holding the cookie can rotate IPs, so a
+ * per-IP budget would not bound anything. Sized for a real review session
+ * (dozens of corrections), not bulk rewriting.
+ */
+export function checkFeedbackRateLimit(now = Date.now()): RateLimitResult {
+  return checkHourlyBudget(
+    feedbackBuckets,
+    "feedback:owner",
+    Number(process.env.WORK_LIVE_FEEDBACK_RATE_LIMIT_PER_HOUR || 120),
+    now
+  );
 }
 
 const OWNER_SESSION_WINDOW_MS = 15 * 60 * 1000;
@@ -51,6 +77,7 @@ export class RateLimitUnavailableError extends Error {
 
 function hasPostgresConfig(): boolean {
   return Boolean(
+    getOptionalEnv("WORK_LIVE_POSTGRES_URL") ||
     getOptionalEnv("POSTGRES_URL") ||
       getOptionalEnv("POSTGRES_PRISMA_URL") ||
       getOptionalEnv("POSTGRES_URL_NON_POOLING") ||
@@ -75,14 +102,23 @@ function checkLocalOwnerSessionRateLimit(key: string, now: number): RateLimitRes
 }
 
 /**
- * Checks the owner-session attempt budget. Production-like deployments fail
- * closed without Postgres; local process memory is only a development fallback.
- * The Postgres upsert locks one key row, so concurrent instances share one
- * atomic five-attempt window.
+ * Checks the owner-session attempt budget.
+ *
+ * Shared (Postgres) storage is required only where requests fan out across
+ * instances: its upsert locks one key row, so concurrent serverless invocations
+ * share one atomic five-attempt window. A single self-hosted process has ONE
+ * memory space, so the in-process limiter genuinely bounds attempts there.
+ *
+ * Failure semantics: throws RateLimitUnavailableError only on serverless without
+ * shared storage. Self-host used to hit that path too (NODE_ENV=production with
+ * no Postgres), which locked the owner out of their own ledger with a 503.
  */
 export async function checkOwnerSessionRateLimit(key: string, now = Date.now()): Promise<RateLimitResult> {
   if (!hasPostgresConfig()) {
-    if (isProductionLike()) {
+    // `VERCEL` marks the multi-instance serverless deployment, where an
+    // in-memory counter cannot bound attempts across instances and failing
+    // closed is the honest choice. A single self-hosted process is not that.
+    if (getOptionalEnv("VERCEL")) {
       throw new RateLimitUnavailableError();
     }
     return checkLocalOwnerSessionRateLimit(key, now);

@@ -30,7 +30,7 @@ const sql = mock(async (strings: TemplateStringsArray, ...values: unknown[]) => 
   return { rows: [] };
 });
 
-mock.module("@vercel/postgres", () => ({ sql }));
+mock.module("@/lib/sql", () => ({ sql }));
 const { checkOwnerSessionRateLimit } = await import("@/lib/rate-limit");
 // Dynamic import is required here so the mocked Postgres module is installed
 // before the routes import the adapters they exercise.
@@ -60,15 +60,46 @@ test("shared owner limiter enforces five attempts, rollover, and bounded cleanup
   }
 });
 
-test("production-like limiter fails closed when shared storage is missing", async () => {
+test("serverless limiter fails closed when shared storage is missing", async () => {
   const previousNodeEnv = process.env.NODE_ENV;
   const previousPostgresUrl = process.env.POSTGRES_URL;
+  const previousVercel = process.env.VERCEL;
   try {
     delete process.env.POSTGRES_URL;
     setNodeEnv("production");
+    process.env.VERCEL = "1";
     await expect(checkOwnerSessionRateLimit("missing-storage", Date.now())).rejects.toThrow("Shared owner-session rate limit storage is unavailable");
   } finally {
     setNodeEnv(previousNodeEnv);
+    if (previousVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = previousVercel;
+    if (previousPostgresUrl === undefined) delete process.env.POSTGRES_URL;
+    else process.env.POSTGRES_URL = previousPostgresUrl;
+  }
+});
+
+// Self-host regression: a single production process has ONE memory space, so the
+// in-process limiter really does bound attempts. Failing closed here (the old
+// NODE_ENV=production check) locked the owner out of their own ledger with a 503.
+test("single-instance production limiter uses process memory instead of failing closed", async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousPostgresUrl = process.env.POSTGRES_URL;
+  const previousVercel = process.env.VERCEL;
+  try {
+    delete process.env.POSTGRES_URL;
+    delete process.env.VERCEL;
+    setNodeEnv("production");
+    const now = Date.now();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect((await checkOwnerSessionRateLimit("self-host", now)).allowed).toBe(true);
+    }
+    const throttled = await checkOwnerSessionRateLimit("self-host", now);
+    expect(throttled.allowed).toBe(false);
+    expect(throttled.retryAfterSeconds ?? 0).toBeGreaterThan(0);
+  } finally {
+    setNodeEnv(previousNodeEnv);
+    if (previousVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = previousVercel;
     if (previousPostgresUrl === undefined) delete process.env.POSTGRES_URL;
     else process.env.POSTGRES_URL = previousPostgresUrl;
   }
@@ -78,8 +109,10 @@ test("owner-session route maps unavailable, throttled, and accepted outcomes", a
   const previousNodeEnv = process.env.NODE_ENV;
   const previousPostgresUrl = process.env.POSTGRES_URL;
   const previousOwnerSecret = process.env.OWNER_SECRET;
+  const previousVercel = process.env.VERCEL;
   try {
     setNodeEnv("production");
+    process.env.VERCEL = "1";
     process.env.OWNER_SECRET = "route-owner-secret";
     delete process.env.POSTGRES_URL;
 
@@ -127,6 +160,8 @@ test("owner-session route maps unavailable, throttled, and accepted outcomes", a
     expect(cookie).toContain("SameSite=Strict");
     expect(cookie).toContain("Secure");
   } finally {
+    if (previousVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = previousVercel;
     setNodeEnv(previousNodeEnv);
     if (previousPostgresUrl === undefined) delete process.env.POSTGRES_URL;
     else process.env.POSTGRES_URL = previousPostgresUrl;

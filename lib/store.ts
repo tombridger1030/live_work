@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { DayHistory, HourlyCheckin, LedgerEntry, NudgeMessage, NudgeState, ScoreResult, Settings, Signals, SnapshotRow, WeeklyGoal } from "@/lib/types";
+import type { DayHistory, FeedbackEntry, HourlyCheckin, LedgerEntry, NudgeMessage, NudgeState, ScoreResult, Settings, Signals, SnapshotRow, WeeklyGoal } from "@/lib/types";
 import { appTimeZone, isQuietHour, isScoringHour, localDayKey, localHour, quietHourEnd, quietHourStart, scoringEndHour, scoringStartHour } from "@/lib/time";
 import { RUBRIC_VERSION } from "@/lib/score";
 import { correctableFields, type CorrectableField } from "@/lib/feedback";
 import { validateWeeklyGoal } from "@/lib/weekly-goal";
+import { sql } from "@/lib/sql";
 
 type SaveSnapshotInput = {
   capturedAt?: Date;
@@ -30,17 +31,32 @@ type LocalState = {
   scoreboardEntries: LedgerEntry[];
   weeklyGoals: WeeklyGoal[];
   nudgeMessages: NudgeMessage[];
+  feedback: FeedbackEntry[];
   settings: Settings;
 };
 
-const localRoot = path.join(process.cwd(), ".work-live");
+// Local data root — the JSON store + thumbnails. Override with WORK_LIVE_DATA_DIR
+// (e.g. a mounted external drive) so data lives off the boot/SD volume; defaults
+// to the repo's .work-live for local dev.
+const localRoot = process.env.WORK_LIVE_DATA_DIR || path.join(process.cwd(), ".work-live");
 const localStoreFile = path.join(localRoot, "store.json");
 const localThumbRoot = path.join(localRoot, "thumbs");
+
+// Retention bound for the local JSON store. This was 2000 when the local store
+// was only a dev fallback — as the SELF-HOSTED production datastore that silently
+// deleted history after ~1-2 weeks (288 captures/day), and would have truncated a
+// Postgres restore on the very next capture. Sized to hold years (288/day * 365 ~=
+// 105k) while still bounding file growth; snapshots are metadata only (~450 bytes
+// each, thumbnails are separate files on disk), so 200k is roughly a 90MB ceiling.
+// If this store ever needs to outgrow a single rewritten JSON file, the answer is
+// SQLite (bun:sqlite), not a bigger number.
+const localSnapshotLimit = Number(process.env.WORK_LIVE_LOCAL_SNAPSHOT_LIMIT || 200_000);
 
 let postgresSchemaReady = false;
 
 function hasPostgresConfig(): boolean {
   return Boolean(
+    process.env.WORK_LIVE_POSTGRES_URL ||
     process.env.POSTGRES_URL ||
       process.env.POSTGRES_PRISMA_URL ||
       process.env.POSTGRES_URL_NON_POOLING ||
@@ -55,6 +71,7 @@ function defaultState(): LocalState {
     scoreboardEntries: [],
     weeklyGoals: [],
     nudgeMessages: [],
+    feedback: [],
     settings: {
       paused: false,
       blur: false,
@@ -80,7 +97,8 @@ async function readLocalState(): Promise<LocalState> {
     hourlyCheckins: state.hourlyCheckins.map(normalizeCheckin),
     scoreboardEntries: state.scoreboardEntries ?? [],
     weeklyGoals: state.weeklyGoals ?? [],
-    nudgeMessages: state.nudgeMessages ?? []
+    nudgeMessages: state.nudgeMessages ?? [],
+    feedback: state.feedback ?? []
   };
 }
 
@@ -135,7 +153,6 @@ async function persistThumbnail(id: string, thumbnail: Uint8Array): Promise<stri
 }
 
 async function sqlClient() {
-  const { sql } = await import("@vercel/postgres");
   if (!postgresSchemaReady) {
     await sql`
       CREATE TABLE IF NOT EXISTS snapshots (
@@ -218,8 +235,9 @@ async function sqlClient() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )
     `;
-    await sql`ALTER TABLE weekly_goals DROP CONSTRAINT IF EXISTS weekly_goals_hours_check`;
-    await sql`ALTER TABLE weekly_goals ADD CONSTRAINT weekly_goals_hours_check CHECK (hours >= 0.1)`;
+    // The hours >= 0.1 check is created inline by CREATE TABLE above. Re-asserting
+    // it here via DROP + ADD races across concurrent cold-start schema inits and
+    // throws 42710 "constraint already exists", so it is intentionally omitted.
     await sql`
       CREATE TABLE IF NOT EXISTS nudge_messages (
         id TEXT PRIMARY KEY,
@@ -347,7 +365,7 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
   const state = await readLocalState();
   state.snapshots = [row, ...state.snapshots]
     .sort((left, right) => new Date(right.capturedAt).getTime() - new Date(left.capturedAt).getTime())
-    .slice(0, 2000);
+    .slice(0, localSnapshotLimit);
   await writeLocalState(state);
   return row;
 }
@@ -572,6 +590,7 @@ export async function correctSnapshot(id: string, signals: Signals, score: Score
   const snapshot = state.snapshots.find((row) => row.id === id);
   if (snapshot) {
     Object.assign(snapshot, signals, score);
+    snapshot.humanVerified = true;
     await writeLocalState(state);
   }
 }
@@ -583,6 +602,16 @@ export async function correctSnapshot(id: string, signals: Signals, score: Score
  */
 export async function recordFeedback(input: { snapshotId: string; field: string; oldValue: string; newValue: string }): Promise<void> {
   if (!hasPostgresConfig()) {
+    await withLocalState((state) => {
+      state.feedback.push({
+        id: randomUUID(),
+        snapshotId: input.snapshotId,
+        field: input.field,
+        oldValue: input.oldValue,
+        newValue: input.newValue,
+        createdAt: new Date().toISOString(),
+      });
+    });
     return;
   }
   const sql = await sqlClient();
@@ -617,7 +646,27 @@ export type CorrectionCase = {
 
 export async function humanVerifiedCases(limit: number): Promise<CorrectionCase[]> {
   if (!hasPostgresConfig()) {
-    return [];
+    const state = await readLocalState();
+    const correctedBySnapshot = new Map<string, Set<string>>();
+    for (const entry of state.feedback) {
+      if (entry.field !== "present" && entry.field !== "headphones") continue;
+      const fields = correctedBySnapshot.get(entry.snapshotId) ?? new Set<string>();
+      fields.add(entry.field);
+      correctedBySnapshot.set(entry.snapshotId, fields);
+    }
+    return state.snapshots
+      .filter((snapshot) => snapshot.humanVerified && correctedBySnapshot.has(snapshot.id))
+      .sort((left, right) => new Date(right.capturedAt).getTime() - new Date(left.capturedAt).getTime())
+      .slice(0, limit)
+      .map((snapshot) => ({
+        id: snapshot.id,
+        capturedAt: snapshot.capturedAt,
+        present: snapshot.present,
+        headphones: snapshot.headphones,
+        correctedFields: Array.from(correctedBySnapshot.get(snapshot.id) ?? []).filter(
+          (field): field is CorrectableField => (correctableFields as readonly string[]).includes(field),
+        ),
+      }));
   }
   const sql = await sqlClient();
   const result = await sql`
@@ -653,7 +702,13 @@ export async function humanVerifiedCases(limit: number): Promise<CorrectionCase[
  */
 export async function manualOverrideCaseCount(): Promise<number> {
   if (!hasPostgresConfig()) {
-    return 0;
+    const state = await readLocalState();
+    const correctedIds = new Set(
+      state.feedback
+        .filter((entry) => entry.field === "present" || entry.field === "headphones")
+        .map((entry) => entry.snapshotId),
+    );
+    return state.snapshots.filter((snapshot) => snapshot.humanVerified && !correctedIds.has(snapshot.id)).length;
   }
   const sql = await sqlClient();
   const result = await sql`

@@ -31,7 +31,20 @@ export type SnapshotRow = Signals &
     proofSignature?: string | null;
     livenessStatus?: LivenessStatus | null;
     livenessScore?: number | null; // mean decoded-pixel delta between frame and proof frame
+    humanVerified?: boolean; // true once a human correction is applied (parity with the Postgres human_verified column)
   };
+
+// One logged human correction — which signal was overridden and the model->human
+// value change. Mirrors the Postgres `feedback` table so the local store can power
+// the same eval/regression export (humanVerifiedCases) offline.
+export type FeedbackEntry = {
+  id: string;
+  snapshotId: string;
+  field: string;
+  oldValue: string;
+  newValue: string;
+  createdAt: string;
+};
 
 export type HourlyCheckin = {
   day: string;
