@@ -14,3 +14,4 @@ skills-lock.json
 # Tom's local Claude/agent session artifacts (screenshots, working notes) —
 # never part of the shipped project; curated media lives in docs/screenshots.
 tasks/
+.env.local.*
