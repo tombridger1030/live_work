@@ -1,10 +1,11 @@
 import OpenAI from "openai";
-import { sql } from "@vercel/postgres";
+import { sql } from "@/lib/sql";
 import { snapshotThumbnailBytes } from "@/lib/store";
 import { parseSignals } from "@/lib/vision";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_PUBLIC_URL = "https://tally-focus.vercel.app";
+const DEFAULT_LOCAL_BASE_URL = "http://localhost:3100";
 const DEFAULT_MODELS = [
   "qwen/qwen3.5-flash-02-23",
   "google/gemma-3-4b-it",
@@ -20,7 +21,7 @@ const SYSTEM_PROMPT =
   "note (a short plain sentence describing what you see; max 160 characters).";
 const USER_TEXT = "Return the focus-signals JSON for this frame.";
 
-type BenchmarkSource = "postgres" | "public";
+type BenchmarkSource = "postgres" | "public" | "local";
 
 type BenchmarkArgs = {
   limit: number;
@@ -29,6 +30,7 @@ type BenchmarkArgs = {
   callsPerDay: number[];
   source: BenchmarkSource;
   publicUrl: string;
+  baseUrl: string;
 };
 
 type EvalFrame = {
@@ -70,10 +72,12 @@ function numberList(value: string | null, fallback: number[]): number[] {
 
 function configuredSource(): BenchmarkSource {
   const configured = argValue("--source");
-  if (configured === "postgres" || configured === "public") {
+  if (configured === "postgres" || configured === "public" || configured === "local") {
     return configured;
   }
-  return process.env.POSTGRES_URL || process.env.DATABASE_URL ? "postgres" : "public";
+  // Self-host is the normal deployment now: with no Postgres, read gold labels
+  // from the local server's eval export rather than scraping pseudo-labels.
+  return process.env.POSTGRES_URL || process.env.DATABASE_URL ? "postgres" : "local";
 }
 
 function parseArgs(): BenchmarkArgs {
@@ -83,7 +87,8 @@ function parseArgs(): BenchmarkArgs {
     models: (argValue("--models")?.split(",").map((model) => model.trim()).filter(Boolean)) ?? DEFAULT_MODELS,
     callsPerDay: numberList(argValue("--calls-per-day"), DEFAULT_CALLS_PER_DAY),
     source: configuredSource(),
-    publicUrl: argValue("--public-url") ?? process.env.WORK_LIVE_PUBLIC_URL ?? process.env.WORK_LIVE_BASE_URL ?? DEFAULT_PUBLIC_URL
+    publicUrl: argValue("--public-url") ?? process.env.WORK_LIVE_PUBLIC_URL ?? process.env.WORK_LIVE_BASE_URL ?? DEFAULT_PUBLIC_URL,
+    baseUrl: argValue("--base-url") ?? process.env.WORK_LIVE_BASE_URL ?? DEFAULT_LOCAL_BASE_URL
   };
 }
 
@@ -171,12 +176,50 @@ async function publicRows(publicUrl: string, limit: number): Promise<EvalFrame[]
     .slice(0, limit);
 }
 
+type EvalCasesResponse = {
+  cases: { id: string; capturedAt: string; headphones: boolean; correctedFields: string[]; thumbUrl: string }[];
+};
+
+/**
+ * Gold labels from the self-hosted server's own eval export. Only cases where a
+ * human actually corrected `headphones` are returned, because that is the single
+ * field this benchmark scores — grading a model against another model's stored
+ * guess would measure agreement, not accuracy.
+ */
+async function localRows(baseUrl: string, limit: number): Promise<EvalFrame[]> {
+  const secret = process.env.OWNER_SECRET;
+  if (!secret || secret.trim().length === 0) {
+    throw new Error("Missing OWNER_SECRET. Set it in local env before running the benchmark; never paste it into chat.");
+  }
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/eval-cases?limit=${limit}`, {
+    headers: { Authorization: `Bearer ${secret}` }
+  });
+  if (!response.ok) {
+    throw new Error(`Local eval-cases source failed: ${response.status}`);
+  }
+  const body: EvalCasesResponse = await response.json();
+  return body.cases
+    .filter((entry) => entry.correctedFields.includes("headphones"))
+    .slice(0, limit)
+    .map((entry) => ({
+      id: entry.id,
+      capturedAt: entry.capturedAt,
+      headphones: entry.headphones,
+      humanVerified: true,
+      thumbUrl: entry.thumbUrl
+    }));
+}
+
 async function evalFrames(
   args: BenchmarkArgs
 ): Promise<{ frames: EvalFrame[]; labelSource: "human_verified" | "pseudo_stored" | "public_pseudo_stored" }> {
   if (args.source === "public") {
     return { frames: await publicRows(args.publicUrl, args.limit), labelSource: "public_pseudo_stored" };
   }
+  if (args.source === "local") {
+    return { frames: await localRows(args.baseUrl, args.limit), labelSource: "human_verified" };
+  }
+
 
   const gold = await postgresRows("gold", args.limit);
   if (gold.length >= args.minGold) {
@@ -207,7 +250,11 @@ async function classify(openai: OpenAI, model: string, jpeg: Uint8Array): Promis
         ]
       }
     ],
-    max_tokens: 220,
+    // Generous cap on purpose: reasoning models (e.g. gpt-5-nano) spend hidden
+    // reasoning tokens before emitting content, and a tight cap made them return
+    // NOTHING — which measures a harness artifact, not the model. Their real
+    // cost still surfaces via the measured completion tokens.
+    max_tokens: 800,
     temperature: 0
   });
   const signals = parseSignals(completion.choices[0]?.message?.content);
@@ -292,7 +339,7 @@ async function main(): Promise<void> {
     openRouterPricing(args.models)
   ]);
   if (frames.length === 0) {
-    throw new Error("No benchmark frames found. Need human-verified rows, recent Postgres snapshots, or public page snapshot data.");
+    throw new Error("No benchmark frames found. Need human-corrected headphones cases (--source local), human-verified Postgres rows, or public page snapshot data.");
   }
 
   const openai = new OpenAI({
@@ -304,8 +351,10 @@ async function main(): Promise<void> {
     }
   });
   const results: ModelResult[] = [];
+  // Local gold frames are served by the local server, not the public URL.
+  const frameBase = args.source === "local" ? args.baseUrl : args.publicUrl;
   for (const model of args.models) {
-    results.push(await benchmarkModel(openai, model, frames, pricing.get(model), args.callsPerDay, args.publicUrl));
+    results.push(await benchmarkModel(openai, model, frames, pricing.get(model), args.callsPerDay, frameBase));
   }
 
   console.log(JSON.stringify({
