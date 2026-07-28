@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react";
 import dynamic from "next/dynamic";
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Headphones, HeadphoneOff, Star, User, UserX, type LucideIcon } from "lucide-react";
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Headphones, HeadphoneOff, Star, TriangleAlert, User, UserX, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Calendar } from "@/components/ui/calendar";
@@ -507,6 +507,26 @@ export function Dashboard({ data }: { data: DashboardData }) {
 
   return (
     <main className="mx-auto max-w-5xl px-5 py-6">
+      {data.vision.status === "ok" ? null : (
+        <div
+          role="status"
+          className="mb-5 flex items-start gap-3 rounded-xl bg-amber-500/10 px-4 py-3 outline outline-1 -outline-offset-1 outline-amber-500/25"
+        >
+          <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-amber-400" />
+          <div className="min-w-0 text-sm leading-5">
+            <p className="font-medium text-amber-200">
+              {data.vision.status === "credits"
+                ? "Headphone and focus checks are off — the AI account has run out of credit."
+                : "Headphone and focus checks are temporarily unavailable."}
+            </p>
+            <p className="mt-0.5 text-amber-200/70">
+              Desk presence is still being recorded
+              {data.vision.since ? ` · unread since ${frameTime(data.vision.since, data.timeZone)}` : ""}
+              {data.vision.status === "credits" ? " · add credit to OpenRouter to turn them back on" : ""}
+            </p>
+          </div>
+        </div>
+      )}
       <header className="mb-6 flex items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-0.5">
           <Button

@@ -1,6 +1,7 @@
 import { captureCadenceFor, captureCadenceLookbackMinutes } from "@/lib/capture-cadence";
 import { getSettings, latestSnapshot, snapshotsSince } from "@/lib/store";
 import { isQuietNow } from "@/lib/time";
+import { visionHealthFrom } from "@/lib/vision-health";
 
 export const runtime = "nodejs";
 
@@ -19,6 +20,9 @@ export async function GET(): Promise<Response> {
       paused: settings.paused,
       quiet,
       latestId: latest?.id ?? null,
+      // Surfaced here as well as on the page so the capture agent and any external
+      // monitor can see a vision outage without scraping HTML.
+      vision: visionHealthFrom(recentSnapshots, now),
       capture: settings.paused || quiet ? { ...capture, due: false } : capture
     },
     {

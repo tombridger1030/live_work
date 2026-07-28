@@ -44,7 +44,24 @@ const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 // record. nex-agi/nex-n2-mini was rejected for exactly that reason — same
 // accuracy, but 18% of live calls returned 502.
 const DEFAULT_OPENROUTER_VISION_MODELS = ["bytedance-seed/seed-1.6-flash", "amazon/nova-2-lite-v1"];
-const VISION_UNAVAILABLE_NOTE = "Vision unavailable; presence verified locally.";
+// Notes written when the frame was captured and a person WAS detected locally, but
+// no vision model could read it. Exported because the dashboard classifies vision
+// health by matching them — the strings must have exactly one definition.
+export const VISION_UNAVAILABLE_NOTE = "Vision unavailable; presence verified locally.";
+// Split out from the generic note because the two need different reactions: a
+// provider blip clears itself on the next capture, an empty account never does
+// until somebody tops it up. Only this one is worth interrupting the owner for.
+export const VISION_CREDITS_NOTE = "Vision unavailable — AI provider credits exhausted; presence verified locally.";
+
+/**
+ * Whether a failed vision call means "the account is out of money" rather than
+ * "the provider hiccuped". Matches the shapes OpenRouter and OpenAI-compatible
+ * gateways use for billing refusals: HTTP 402, an insufficient-credits/quota
+ * message, or a payment-required phrase.
+ */
+export function isCreditsExhausted(message: string): boolean {
+  return /\b402\b|insufficient[ _-]?(credits|quota|balance)|payment required|exceeded.{0,20}(quota|credit)|billing/i.test(message);
+}
 
 // Normal captures use the local person detector for presence first, then ask the
 // VLM only for focus quality. This deliberately avoids letting the VLM hallucinate
@@ -475,14 +492,20 @@ export async function analyzeFrameWithProvider(jpeg: Uint8Array): Promise<FrameA
     if (!(error instanceof VisionAnalysisError)) {
       throw error;
     }
-    console.warn("[work-live] Vision unavailable after local presence; storing conservative fallback:", error.message);
+    const outOfCredits = isCreditsExhausted(error.message);
+    console.warn(
+      outOfCredits
+        ? "[work-live] Vision DOWN — provider credits exhausted; top up to restore headphone/focus reads:"
+        : "[work-live] Vision unavailable after local presence; storing conservative fallback:",
+      error.message
+    );
     return {
       signals: {
         present: true,
         headphones: false,
         eyesOnScreen: false,
         posture: "unknown",
-        note: VISION_UNAVAILABLE_NOTE
+        note: outOfCredits ? VISION_CREDITS_NOTE : VISION_UNAVAILABLE_NOTE
       },
       visionProvider: null
     };
