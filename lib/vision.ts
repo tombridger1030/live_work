@@ -265,6 +265,9 @@ type VisionProvider = {
 export type FrameAnalysisResult = {
   signals: Signals;
   visionProvider: VisionProvider["name"] | null;
+  // Which model produced the answer; null when no model was reached (fixture,
+  // unreadable frame, no person, or total outage).
+  visionModel: string | null;
 };
 
 function visionProviderOrder(): VisionProvider["name"][] {
@@ -364,6 +367,10 @@ async function analyzeViaProvider(
 type VisionProviderResult = {
   signals: Signals;
   provider: VisionProvider["name"];
+  // The model that actually answered. Recorded on the snapshot so accuracy can be
+  // attributed later: a model other than the first in the chain means this frame
+  // fell back, either because the first was unsure or because it errored.
+  model: string;
 };
 
 async function analyzeWithVisionProviders(
@@ -387,9 +394,9 @@ async function analyzeWithVisionProviders(
     try {
       const read = await analyzeViaProvider(provider, jpeg, systemPrompt, userText, parse);
       if (read.confident) {
-        return { signals: read.signals, provider: provider.name };
+        return { signals: read.signals, provider: provider.name, model: provider.model };
       }
-      unsure = { signals: read.signals, provider: provider.name };
+      unsure = { signals: read.signals, provider: provider.name, model: provider.model };
       console.warn(`[work-live] Vision model ${provider.model} was unsure; escalating to the next model`);
     } catch (error) {
       const message = error instanceof VisionAnalysisError ? error.message : (error as Error).message;
@@ -537,7 +544,7 @@ function awaySignals(note: string): Signals {
 export async function analyzeFrameWithProvider(jpeg: Uint8Array): Promise<FrameAnalysisResult> {
   const fixture = fixtureSignals();
   if (fixture) {
-    return { signals: fixture, visionProvider: null };
+    return { signals: fixture, visionProvider: null, visionModel: null };
   }
 
   // A dim or colour-cast frame is no longer discarded unseen. The local detector
@@ -552,13 +559,14 @@ export async function analyzeFrameWithProvider(jpeg: Uint8Array): Promise<FrameA
   if (!(unreadable ? score >= presenceMinScore("dim") : present)) {
     return {
       signals: awaySignals(unreadable ?? "No person detected — turned away or not at the desk."),
-      visionProvider: null
+      visionProvider: null,
+      visionModel: null
     };
   }
 
   try {
     const quality = await analyzeFocusQuality(small);
-    return { signals: { ...quality.signals, present: true }, visionProvider: quality.provider };
+    return { signals: { ...quality.signals, present: true }, visionProvider: quality.provider, visionModel: quality.model };
   } catch (error) {
     if (!(error instanceof VisionAnalysisError)) {
       throw error;
@@ -583,7 +591,8 @@ export async function analyzeFrameWithProvider(jpeg: Uint8Array): Promise<FrameA
         note: outOfCredits ? VISION_CREDITS_NOTE : VISION_UNAVAILABLE_NOTE,
         visionRead: "unknown"
       },
-      visionProvider: null
+      visionProvider: null,
+      visionModel: null
     };
   }
 }
@@ -616,11 +625,11 @@ export async function auditFrameWithProvider(jpeg: Uint8Array): Promise<FrameAna
   // frame with a clearly visible person is worth auditing too, hence the strict
   // detector bar rather than an outright reject.
   if (unreadable && (await detectPresence(small)).score < presenceMinScore("dim")) {
-    return { signals: awaySignals(unreadable), visionProvider: null };
+    return { signals: awaySignals(unreadable), visionProvider: null, visionModel: null };
   }
 
   const audited = await analyzePresenceAudit(small);
-  return { signals: audited.signals, visionProvider: audited.provider };
+  return { signals: audited.signals, visionProvider: audited.provider, visionModel: audited.model };
 }
 
 /**

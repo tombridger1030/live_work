@@ -22,6 +22,7 @@ type SnapshotCaptureMetadata = {
   proofSignature?: string | null;
   livenessStatus?: SnapshotRow["livenessStatus"];
   livenessScore?: number | null;
+  visionModel?: string | null;
 };
 
 
@@ -180,6 +181,7 @@ async function sqlClient() {
     // Postgres would silently drop the flag and resurrect the bug where an
     // unexamined frame reads as an explicit "no headphones".
     await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS vision_read TEXT`;
+    await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS vision_model TEXT`;
     await sql`CREATE INDEX IF NOT EXISTS snapshots_captured_at_idx ON snapshots (captured_at DESC)`;
     await sql`
       CREATE TABLE IF NOT EXISTS hourly_checkins (
@@ -279,7 +281,8 @@ function mapSnapshot(row: Record<string, unknown>): SnapshotRow {
     livenessStatus: row.liveness_status ? (String(row.liveness_status) as SnapshotRow["livenessStatus"]) : null,
     livenessScore: row.liveness_score == null ? null : Number(row.liveness_score),
     // Absent/NULL means the row predates the column, which is "a model read it".
-    visionRead: row.vision_read === "unknown" ? "unknown" : "ok"
+    visionRead: row.vision_read === "unknown" ? "unknown" : "ok",
+    visionModel: row.vision_model ? String(row.vision_model) : null
   };
 }
 
@@ -351,7 +354,8 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
     frameSignature: input.frameSignature ?? null,
     proofSignature: input.proofSignature ?? null,
     livenessStatus: input.livenessStatus ?? null,
-    livenessScore: input.livenessScore ?? null
+    livenessScore: input.livenessScore ?? null,
+    visionModel: input.visionModel ?? null
   };
 
   if (hasPostgresConfig()) {
@@ -360,14 +364,14 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
       INSERT INTO snapshots (
         id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, thumb_url,
         frame_hash, rubric_version, capture_source, frame_signature, proof_signature, liveness_status, liveness_score,
-        vision_read
+        vision_read, vision_model
       )
       VALUES (
         ${row.id}, ${row.capturedAt}, ${row.present}, ${row.headphones}, ${row.eyesOnScreen},
         ${row.posture}, ${row.score}, ${row.status}, ${row.note}, ${stored},
         ${row.frameHash}, ${RUBRIC_VERSION}, ${row.captureSource}, ${row.frameSignature},
         ${row.proofSignature}, ${row.livenessStatus}, ${row.livenessScore},
-        ${row.visionRead ?? "ok"}
+        ${row.visionRead ?? "ok"}, ${row.visionModel ?? null}
       )
     `;
     return row;

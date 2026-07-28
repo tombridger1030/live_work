@@ -47,6 +47,10 @@ export type SnapshotRow = Signals &
     livenessStatus?: LivenessStatus | null;
     livenessScore?: number | null; // mean decoded-pixel delta between frame and proof frame
     humanVerified?: boolean; // true once a human correction is applied (parity with the Postgres human_verified column)
+    // Which vision model answered this frame; null when none was reached. Recorded
+    // so accuracy can be attributed per model, and so a fallback answer (first model
+    // unsure or erroring) can be told apart from a first-choice one.
+    visionModel?: string | null;
   };
 
 // One logged human correction — which signal was overridden and the model->human
