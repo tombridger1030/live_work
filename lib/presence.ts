@@ -133,7 +133,7 @@ function loadModel(): Promise<cocoSsd.ObjectDetection> {
  * Preconditions: `frame` is a single decodable image (JPEG/PNG/...). The caller
  * typically passes a downscaled frame so detection is cheap.
  * Postconditions: `present` is true when the strongest "person" detection clears
- * the accept threshold (`WORK_LIVE_PRESENCE_MIN_SCORE`, default 0.5); `score` is
+ * the accept threshold (`WORK_LIVE_PRESENCE_MIN_SCORE`, default 0.35); `score` is
  * that confidence (0 when none). An absent person — an empty chair, an empty
  * room — returns `{ present: false, score: 0 }`, which the caller treats as
  * "away". Never throws for "no person"; throws only when the backend/model

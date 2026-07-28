@@ -12,6 +12,7 @@
 // Clearing the override restores the invariant the suite is written against:
 // the directory tests write to is the same one they clean.
 delete process.env.WORK_LIVE_DATA_DIR;
+delete process.env.WORK_LIVE_POSTGRES_URL;
 
 // Postgres config would point the same destructive routes at a real database, so
 // a test run must never see one regardless of what .env.local carries.

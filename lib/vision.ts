@@ -386,9 +386,10 @@ async function analyzeWithVisionProviders(
     }
   }
 
-  // Every model hesitated, but an answer we can attribute is still better than
-  // the conservative "no headphones" fallback a throw would produce.
-  if (unsure) return unsure;
+  // An unsure answer is only a usable last resort when every model answered.
+  // If any escalation attempt failed, returning the first model's guess would
+  // hide a partial outage and make `visionHealthFrom` report a healthy read.
+  if (unsure && failures.length === 0) return unsure;
 
   throw new VisionAnalysisError(`Vision providers failed: ${failures.join("; ")}`);
 }

@@ -277,6 +277,24 @@ test("an unsure model escalates to the next model", async () => {
   expect(hits.get("m-ok-2")).toBe(1);
 });
 
+// An uncertain first answer is not trustworthy when the escalation call itself
+// fails. It must take the visible outage path instead of looking like a healthy
+// model read with a vague note.
+test("an unsure answer followed by provider failure becomes a visible fallback", async () => {
+  process.env.WORK_LIVE_VISION_PROVIDERS = "openrouter";
+  process.env.OPENROUTER_KEY = "test-openrouter-key";
+  process.env.WORK_LIVE_OPENROUTER_BASE_URL = baseURL;
+  process.env.WORK_LIVE_OPENROUTER_VISION_MODEL = "m-unsure,m-500";
+
+  const signals = await analyzeFrame(faceFixture);
+
+  expect(signals.present).toBe(true);
+  expect(signals.headphones).toBe(false);
+  expect(signals.note).toBe(VISION_UNAVAILABLE_NOTE);
+  expect(hits.get("m-unsure")).toBe(1);
+  expect(hits.get("m-500")).toBe(1);
+});
+
 // Confidence must not cost anything on the ordinary frame: a confident first
 // answer stops the chain, so the stronger model is never billed for easy frames.
 test("a confident first answer never reaches the stronger model", async () => {
