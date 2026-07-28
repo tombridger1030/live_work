@@ -109,3 +109,44 @@ test("presence threshold honors a valid override and rejects malformed ones", ()
     else process.env.WORK_LIVE_PRESENCE_MIN_SCORE = prev;
   }
 });
+
+// Dim frames used to be discarded on brightness alone, which threw away real
+// late-night work: under purple LED the owner at his desk scores 0.60-0.84, and
+// those frames never reached the detector. They are now judged, but under a
+// STRICTER bar, because an empty chair silhouette in the same light scores
+// 0.36-0.43 — above the normal 0.35 gate. 0.55 sits in that measured gap.
+test("the dim-frame threshold stays at the calibrated 0.55", () => {
+  const prev = process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE;
+  delete process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE;
+  try {
+    expect(presenceMinScore("dim")).toBe(0.55);
+  } finally {
+    if (prev !== undefined) process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE = prev;
+  }
+});
+
+// THE invariant of the two-tier design. If the dim bar ever drops to or below the
+// normal one, empty-chair silhouettes under coloured light start being recorded
+// as the owner working — the exact false claim the split exists to prevent.
+test("the dim-frame bar is always stricter than the normal one", () => {
+  const prevDim = process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE;
+  const prevNormal = process.env.WORK_LIVE_PRESENCE_MIN_SCORE;
+  delete process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE;
+  delete process.env.WORK_LIVE_PRESENCE_MIN_SCORE;
+  try {
+    expect(presenceMinScore("dim")).toBeGreaterThan(presenceMinScore("normal"));
+    expect(presenceMinScore()).toBe(presenceMinScore("normal"));
+
+    process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE = "0.8";
+    expect(presenceMinScore("dim")).toBe(0.8);
+    for (const bad of ["0", "-1", "1.5", "nope", ""]) {
+      process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE = bad;
+      expect(presenceMinScore("dim")).toBe(0.55);
+    }
+  } finally {
+    if (prevDim === undefined) delete process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE;
+    else process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE = prevDim;
+    if (prevNormal === undefined) delete process.env.WORK_LIVE_PRESENCE_MIN_SCORE;
+    else process.env.WORK_LIVE_PRESENCE_MIN_SCORE = prevNormal;
+  }
+});

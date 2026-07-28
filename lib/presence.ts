@@ -44,9 +44,19 @@ const PERSON_LABEL = "person";
 //
 // Deliberately NOT lower: this is a public accountability record, where claiming
 // unworked time is worse than missing worked time. The two frames in the 0.30-0.50
-// band that looked genuinely empty were late-night and dimly lit, so the floor
-// stays well above them.
+// band that looked genuinely empty were late-night and dimly lit — which is what
+// DIM_FRAME_MIN_SCORE below exists to handle.
 const DEFAULT_MIN_SCORE = 0.35;
+// The bar a frame must clear when the readability gate flags it as dim or
+// colour-cast. HIGHER than normal on purpose: a dim frame is exactly where the
+// detector is least trustworthy, so it must prove more, rather than being thrown
+// away unseen (which is what used to happen and cost real night-time work).
+//
+// Measured 2026-07-27 on the owner's night frames under purple LED lighting:
+//   EMPTY chair (silhouette reads as a torso)  -> 0.36, 0.36, 0.38, 0.41, 0.43
+//   owner actually at the desk                 -> 0.60, 0.73, 0.77, 0.81, 0.84
+// 0.55 sits in that gap. Override with WORK_LIVE_PRESENCE_DIM_MIN_SCORE.
+const DIM_FRAME_MIN_SCORE = 0.55;
 // Floor passed to the model so borderline boxes are still returned and the real
 // accept/reject cutoff stays in ONE place (the env-tunable threshold below).
 const MODEL_SCORE_FLOOR = 0.15;
@@ -160,17 +170,26 @@ export async function detectPresence(frame: Uint8Array): Promise<PresenceResult>
   return { present: best >= presenceMinScore(), score: best };
 }
 
+/** How readable the frame is, which decides which calibrated bar applies. */
+export type FrameQuality = "normal" | "dim";
+
 /**
- * The confidence a "person" box must reach to count as present.
+ * The confidence a "person" box must reach for a frame to count as present.
  *
- * Reads WORK_LIVE_PRESENCE_MIN_SCORE, accepting only a finite number in (0, 1];
- * anything else (unset, blank, junk, 0, >1) falls back to DEFAULT_MIN_SCORE.
- * Exported so the calibrated default is pinned by a test rather than resting on
- * a comment — raising it silently would re-lose the head-down frames it was
- * lowered to catch.
+ * `"normal"` reads WORK_LIVE_PRESENCE_MIN_SCORE, `"dim"` reads
+ * WORK_LIVE_PRESENCE_DIM_MIN_SCORE; each accepts only a finite number in (0, 1]
+ * and otherwise falls back to its calibrated default. Both bars live here so the
+ * numbers, their evidence, and their parsing rule stay in one place — raising
+ * either silently would re-lose the frames they were tuned to catch.
  */
-export function presenceMinScore(): number {
-  const raw = getOptionalEnv("WORK_LIVE_PRESENCE_MIN_SCORE");
+export function presenceMinScore(quality: FrameQuality = "normal"): number {
+  return quality === "dim"
+    ? envScore("WORK_LIVE_PRESENCE_DIM_MIN_SCORE", DIM_FRAME_MIN_SCORE)
+    : envScore("WORK_LIVE_PRESENCE_MIN_SCORE", DEFAULT_MIN_SCORE);
+}
+
+function envScore(name: string, fallback: number): number {
+  const raw = getOptionalEnv(name);
   const parsed = raw ? Number(raw) : Number.NaN;
-  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : DEFAULT_MIN_SCORE;
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : fallback;
 }

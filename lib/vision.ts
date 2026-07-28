@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import sharp from "sharp";
 import { z } from "zod";
 import { getOptionalEnv } from "@/lib/env";
-import { detectPresence } from "@/lib/presence";
+import { detectPresence, presenceMinScore } from "@/lib/presence";
 import type { Signals } from "@/lib/types";
 
 export class VisionAnalysisError extends Error {
@@ -452,16 +452,20 @@ export async function analyzeFrameWithProvider(jpeg: Uint8Array): Promise<FrameA
     return { signals: fixture, visionProvider: null };
   }
 
-  const unreadable = await unreadableFrameReason(jpeg);
-  if (unreadable) {
-    return { signals: awaySignals(unreadable), visionProvider: null };
-  }
-
+  // A dim or colour-cast frame is no longer discarded unseen. The local detector
+  // still gets to look; it just has to clear the stricter dim bar. Under the
+  // owner's purple LED lighting an EMPTY chair silhouette scores ~0.4 while he
+  // actually at the desk scores 0.6+, so the two are separable — whereas throwing
+  // every dim frame away lost real late-night working time.
   const small = await downscaleForVision(jpeg);
+  const unreadable = await unreadableFrameReason(jpeg);
+  const { present, score } = await detectPresence(small);
 
-  const { present } = await detectPresence(small);
-  if (!present) {
-    return { signals: awaySignals("No person detected — turned away or not at the desk."), visionProvider: null };
+  if (!(unreadable ? score >= presenceMinScore("dim") : present)) {
+    return {
+      signals: awaySignals(unreadable ?? "No person detected — turned away or not at the desk."),
+      visionProvider: null
+    };
   }
 
   try {
@@ -504,12 +508,19 @@ export async function analyzeFrame(jpeg: Uint8Array): Promise<Signals> {
  * before any remote provider call.
  */
 export async function auditFrameWithProvider(jpeg: Uint8Array): Promise<FrameAnalysisResult> {
+  const small = await downscaleForVision(jpeg);
   const unreadable = await unreadableFrameReason(jpeg);
-  if (unreadable) {
+
+  // Only the READABILITY check is short-circuited here, never the presence
+  // question: this audit exists to challenge the local detector, so it must still
+  // reach the VLM on a readable frame even when the detector saw nobody. A dim
+  // frame with a clearly visible person is worth auditing too, hence the strict
+  // detector bar rather than an outright reject.
+  if (unreadable && (await detectPresence(small)).score < presenceMinScore("dim")) {
     return { signals: awaySignals(unreadable), visionProvider: null };
   }
 
-  const audited = await analyzePresenceAudit(await downscaleForVision(jpeg));
+  const audited = await analyzePresenceAudit(small);
   return { signals: audited.signals, visionProvider: audited.provider };
 }
 
@@ -533,15 +544,15 @@ export async function auditFrame(jpeg: Uint8Array): Promise<Signals> {
  * reason (dark frame, no person) or is empty when present.
  */
 export async function detectPresenceOnly(jpeg: Uint8Array): Promise<{ present: boolean; note: string }> {
-  const unreadable = await unreadableFrameReason(jpeg);
-  if (unreadable) {
-    return { present: false, note: unreadable };
-  }
-
   const small = await downscaleForVision(jpeg);
-  const { present } = await detectPresence(small);
+  const unreadable = await unreadableFrameReason(jpeg);
+  const { present, score } = await detectPresence(small);
+
+  // Same rule as the full capture path: a dim frame is judged by the detector
+  // under a stricter bar rather than being discarded on brightness alone.
+  const clears = unreadable ? score >= presenceMinScore("dim") : present;
   return {
-    present,
-    note: present ? "" : "No person detected — turned away or not at the desk."
+    present: clears,
+    note: clears ? "" : (unreadable ?? "No person detected — turned away or not at the desk.")
   };
 }
