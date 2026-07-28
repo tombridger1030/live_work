@@ -1,0 +1,5 @@
+[test]
+# Redirects the data root to a throwaway directory before any test imports the
+# store. See tests/setup.ts — without this the suite runs destructive purge
+# routes against the live self-hosted data.
+preload = ["./tests/setup.ts"]

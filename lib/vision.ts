@@ -35,7 +35,15 @@ const auditSignalSchema = z.object({
 const DEFAULT_QWEN_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 const DEFAULT_QWEN_VISION_MODEL = "qwen3.6-flash";
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-const DEFAULT_OPENROUTER_VISION_MODEL = "qwen/qwen3.5-flash-02-23";
+// Ordered failover list, chosen by benchmark against the owner's own 154
+// corrected frames plus a live reliability probe (2026-07-27). Both score 98.9%
+// balanced accuracy with 100% specificity; they are listed in cost order and sit
+// on INDEPENDENT upstream providers (ByteDance, Amazon), so one provider's 502s
+// cannot silence vision. Reliability is weighted above raw accuracy here: a
+// failed call is recorded as "no headphones", so an unreliable model corrupts the
+// record. nex-agi/nex-n2-mini was rejected for exactly that reason — same
+// accuracy, but 18% of live calls returned 502.
+const DEFAULT_OPENROUTER_VISION_MODELS = ["bytedance-seed/seed-1.6-flash", "amazon/nova-2-lite-v1"];
 const VISION_UNAVAILABLE_NOTE = "Vision unavailable; presence verified locally.";
 
 // Normal captures use the local person detector for presence first, then ask the
@@ -200,34 +208,35 @@ function visionProviderOrder(): VisionProvider["name"][] {
 function configuredVisionProviders(): VisionProvider[] {
   const qwenKey = getOptionalEnv("DASHSCOPE_API_KEY") || getOptionalEnv("QWEN_API_KEY");
   const openRouterKey = getOptionalEnv("OPENROUTER_API_KEY") || getOptionalEnv("OPENROUTER_KEY");
-  const providers: Partial<Record<VisionProvider["name"], VisionProvider>> = {};
+  const providers: Partial<Record<VisionProvider["name"], VisionProvider[]>> = {};
 
   if (qwenKey) {
-    providers.qwen = {
+    providers.qwen = [{
       name: "qwen",
       apiKey: qwenKey,
       baseURL: getOptionalEnv("WORK_LIVE_QWEN_BASE_URL") || getOptionalEnv("DASHSCOPE_BASE_URL") || DEFAULT_QWEN_BASE_URL,
       model: getOptionalEnv("WORK_LIVE_QWEN_VISION_MODEL") || getOptionalEnv("WORK_LIVE_VISION_MODEL") || DEFAULT_QWEN_VISION_MODEL
-    };
+    }];
   }
 
   if (openRouterKey) {
-    providers.openrouter = {
-      name: "openrouter",
+    const configured = getOptionalEnv("WORK_LIVE_OPENROUTER_VISION_MODEL");
+    const models = (configured ? configured.split(",") : DEFAULT_OPENROUTER_VISION_MODELS)
+      .map((model) => model.trim())
+      .filter(Boolean);
+    providers.openrouter = models.map((model) => ({
+      name: "openrouter" as const,
       apiKey: openRouterKey,
       baseURL: getOptionalEnv("WORK_LIVE_OPENROUTER_BASE_URL") || DEFAULT_OPENROUTER_BASE_URL,
-      model: getOptionalEnv("WORK_LIVE_OPENROUTER_VISION_MODEL") || DEFAULT_OPENROUTER_VISION_MODEL,
+      model,
       headers: {
         "HTTP-Referer": getOptionalEnv("WORK_LIVE_PUBLIC_URL") || "https://tally-focus.vercel.app",
         "X-Title": "work-live"
       }
-    };
+    }));
   }
 
-  return visionProviderOrder().flatMap((name) => {
-    const provider = providers[name];
-    return provider ? [provider] : [];
-  });
+  return visionProviderOrder().flatMap((name) => providers[name] ?? []);
 }
 
 // Direct OpenAI-compatible vision APIs. Qwen/DashScope remains first for existing
