@@ -44,6 +44,7 @@ export async function GET(request: Request): Promise<Response> {
       present: entry.present,
       headphones: entry.headphones,
       correctedFields: entry.correctedFields,
+      modelSaid: entry.modelSaid,
       thumbUrl: `/api/thumb/${entry.id}`,
     })),
   });

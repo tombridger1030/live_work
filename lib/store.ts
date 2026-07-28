@@ -625,7 +625,7 @@ export async function recordFeedback(input: { snapshotId: string; field: string;
  * The human-corrected snapshots, newest first — the regression set for the
  * capture agent's misclassifications. A row is included the moment a human
  * correction marks it `human_verified`, so every correction auto-enrolls with no
- * extra bookkeeping. Postgres-only (returns [] in local dev, like feedback).
+ * extra bookkeeping.
  *
  * `correctedFields` is the set of signals a human actually overrode (from the
  * feedback log), so an eval asserts ONLY human-truth fields and never treats a
@@ -635,6 +635,15 @@ export async function recordFeedback(input: { snapshotId: string; field: string;
  * not-working window (a person can be physically present but off-task), not a
  * presence-detector error — those are excluded so the eval judges the detector
  * against real physical-presence corrections only.
+ *
+ * `modelSaid` carries what the model ORIGINALLY answered for each corrected
+ * field, taken from the earliest feedback row's old_value. Without it every
+ * correction looks alike; with it an eval can split the edge cases by failure
+ * direction — hallucinated headphones (model true, human false) versus missed
+ * headphones (model false, human true) — which usually have different causes.
+ * A field is omitted when the stored old_value is not a parseable boolean, which
+ * is how deliberate labelling runs (no prior model answer) stay out of the
+ * direction split instead of being counted as a false negative.
  */
 export type CorrectionCase = {
   id: string;
@@ -642,53 +651,88 @@ export type CorrectionCase = {
   present: boolean;
   headphones: boolean;
   correctedFields: CorrectableField[];
+  modelSaid: Partial<Record<CorrectableField, boolean>>;
 };
+
+// "true"/"false" are what recordFeedback stores; anything else (notably the empty
+// string a labelling session writes) means there was no prior model answer.
+function parseModelValue(raw: string): boolean | undefined {
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return undefined;
+}
 
 export async function humanVerifiedCases(limit: number): Promise<CorrectionCase[]> {
   if (!hasPostgresConfig()) {
     const state = await readLocalState();
-    const correctedBySnapshot = new Map<string, Set<string>>();
-    for (const entry of state.feedback) {
+    // Earliest correction per (snapshot, field): that old_value is the model's
+    // original answer; later ones are the human changing their own mind.
+    const firstBySnapshot = new Map<string, Map<CorrectableField, string>>();
+    const ordered = [...state.feedback].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    for (const entry of ordered) {
       if (entry.field !== "present" && entry.field !== "headphones") continue;
-      const fields = correctedBySnapshot.get(entry.snapshotId) ?? new Set<string>();
-      fields.add(entry.field);
-      correctedBySnapshot.set(entry.snapshotId, fields);
+      const fields = firstBySnapshot.get(entry.snapshotId) ?? new Map<CorrectableField, string>();
+      if (!fields.has(entry.field)) fields.set(entry.field, entry.oldValue);
+      firstBySnapshot.set(entry.snapshotId, fields);
     }
     return state.snapshots
-      .filter((snapshot) => snapshot.humanVerified && correctedBySnapshot.has(snapshot.id))
+      .filter((snapshot) => snapshot.humanVerified && firstBySnapshot.has(snapshot.id))
       .sort((left, right) => new Date(right.capturedAt).getTime() - new Date(left.capturedAt).getTime())
       .slice(0, limit)
-      .map((snapshot) => ({
-        id: snapshot.id,
-        capturedAt: snapshot.capturedAt,
-        present: snapshot.present,
-        headphones: snapshot.headphones,
-        correctedFields: Array.from(correctedBySnapshot.get(snapshot.id) ?? []).filter(
-          (field): field is CorrectableField => (correctableFields as readonly string[]).includes(field),
-        ),
-      }));
+      .map((snapshot) => {
+        const corrections = firstBySnapshot.get(snapshot.id) ?? new Map<CorrectableField, string>();
+        const modelSaid: Partial<Record<CorrectableField, boolean>> = {};
+        for (const [field, raw] of corrections) {
+          const parsed = parseModelValue(raw);
+          if (parsed !== undefined) modelSaid[field] = parsed;
+        }
+        return {
+          id: snapshot.id,
+          capturedAt: snapshot.capturedAt,
+          present: snapshot.present,
+          headphones: snapshot.headphones,
+          correctedFields: Array.from(corrections.keys()),
+          modelSaid
+        };
+      });
   }
   const sql = await sqlClient();
   const result = await sql`
+    WITH first_correction AS (
+      SELECT DISTINCT ON (f.snapshot_id, f.field) f.snapshot_id, f.field, f.old_value
+      FROM feedback f
+      WHERE f.field IN ('present', 'headphones')
+      ORDER BY f.snapshot_id, f.field, f.created_at ASC
+    )
     SELECT s.id, s.captured_at, s.present, s.headphones,
-      ARRAY_AGG(DISTINCT f.field) AS corrected_fields
+      ARRAY_AGG(c.field ORDER BY c.field) AS corrected_fields,
+      ARRAY_AGG(c.old_value ORDER BY c.field) AS model_values
     FROM snapshots s
-    JOIN feedback f ON f.snapshot_id = s.id AND f.field IN ('present', 'headphones')
+    JOIN first_correction c ON c.snapshot_id = s.id
     WHERE s.human_verified IS TRUE
     GROUP BY s.id, s.captured_at, s.present, s.headphones
     ORDER BY s.captured_at DESC
     LIMIT ${limit}
   `;
   return result.rows.map((row) => {
-    const logged = ((row.corrected_fields as string[] | null) ?? []).filter(
-      (field): field is CorrectableField => (correctableFields as readonly string[]).includes(field),
-    );
+    const fields = (row.corrected_fields as string[] | null) ?? [];
+    const values = (row.model_values as string[] | null) ?? [];
+    const correctedFields: CorrectableField[] = [];
+    const modelSaid: Partial<Record<CorrectableField, boolean>> = {};
+    fields.forEach((field, index) => {
+      if (!(correctableFields as readonly string[]).includes(field)) return;
+      const typed = field as CorrectableField;
+      correctedFields.push(typed);
+      const parsed = parseModelValue(String(values[index] ?? ""));
+      if (parsed !== undefined) modelSaid[typed] = parsed;
+    });
     return {
       id: String(row.id),
       capturedAt: new Date(row.captured_at as string | Date).toISOString(),
       present: Boolean(row.present),
       headphones: Boolean(row.headphones),
-      correctedFields: logged,
+      correctedFields,
+      modelSaid
     };
   });
 }
