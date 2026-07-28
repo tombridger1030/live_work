@@ -176,6 +176,10 @@ async function sqlClient() {
     await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS liveness_score DOUBLE PRECISION`;
     await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS rubric_version INTEGER`;
     await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS human_verified BOOLEAN`;
+    // Dormant in self-host (JSON store), but without it a move back to hosted
+    // Postgres would silently drop the flag and resurrect the bug where an
+    // unexamined frame reads as an explicit "no headphones".
+    await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS vision_read TEXT`;
     await sql`CREATE INDEX IF NOT EXISTS snapshots_captured_at_idx ON snapshots (captured_at DESC)`;
     await sql`
       CREATE TABLE IF NOT EXISTS hourly_checkins (
@@ -189,6 +193,7 @@ async function sqlClient() {
       )
     `;
     await sql`ALTER TABLE hourly_checkins ADD COLUMN IF NOT EXISTS critical BOOLEAN NOT NULL DEFAULT FALSE`;
+    await sql`ALTER TABLE hourly_checkins ADD COLUMN IF NOT EXISTS unknown_frames INTEGER NOT NULL DEFAULT 0`;
     await sql`
       CREATE TABLE IF NOT EXISTS settings (
         id INTEGER PRIMARY KEY DEFAULT 1,
@@ -272,7 +277,9 @@ function mapSnapshot(row: Record<string, unknown>): SnapshotRow {
     frameSignature: row.frame_signature ? String(row.frame_signature) : null,
     proofSignature: row.proof_signature ? String(row.proof_signature) : null,
     livenessStatus: row.liveness_status ? (String(row.liveness_status) as SnapshotRow["livenessStatus"]) : null,
-    livenessScore: row.liveness_score == null ? null : Number(row.liveness_score)
+    livenessScore: row.liveness_score == null ? null : Number(row.liveness_score),
+    // Absent/NULL means the row predates the column, which is "a model read it".
+    visionRead: row.vision_read === "unknown" ? "unknown" : "ok"
   };
 }
 
@@ -283,6 +290,8 @@ function mapCheckin(row: Record<string, unknown>): HourlyCheckin {
     avgScore: Number(row.avg_score),
     presentPct: Number(row.present_pct),
     headphonesPct: Number(row.headphones_pct),
+    // Legacy rows predate the column; 0 until the hour is rebuilt from its frames.
+    unknownFrames: row.unknown_frames == null ? 0 : Number(row.unknown_frames),
     verdict: String(row.verdict),
     critical: Boolean(row.critical)
   };
@@ -350,13 +359,15 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
     await sql`
       INSERT INTO snapshots (
         id, captured_at, present, headphones, eyes_on_screen, posture, score, status, note, thumb_url,
-        frame_hash, rubric_version, capture_source, frame_signature, proof_signature, liveness_status, liveness_score
+        frame_hash, rubric_version, capture_source, frame_signature, proof_signature, liveness_status, liveness_score,
+        vision_read
       )
       VALUES (
         ${row.id}, ${row.capturedAt}, ${row.present}, ${row.headphones}, ${row.eyesOnScreen},
         ${row.posture}, ${row.score}, ${row.status}, ${row.note}, ${stored},
         ${row.frameHash}, ${RUBRIC_VERSION}, ${row.captureSource}, ${row.frameSignature},
-        ${row.proofSignature}, ${row.livenessStatus}, ${row.livenessScore}
+        ${row.proofSignature}, ${row.livenessStatus}, ${row.livenessScore},
+        ${row.visionRead ?? "ok"}
       )
     `;
     return row;
@@ -957,15 +968,16 @@ export async function saveHourlyCheckin(checkin: HourlyCheckin): Promise<HourlyC
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
-      INSERT INTO hourly_checkins (day, hour, avg_score, present_pct, headphones_pct, verdict, critical)
-      VALUES (${checkin.day}, ${checkin.hour}, ${checkin.avgScore}, ${checkin.presentPct}, ${checkin.headphonesPct}, ${checkin.verdict}, ${checkin.critical})
+      INSERT INTO hourly_checkins (day, hour, avg_score, present_pct, headphones_pct, unknown_frames, verdict, critical)
+      VALUES (${checkin.day}, ${checkin.hour}, ${checkin.avgScore}, ${checkin.presentPct}, ${checkin.headphonesPct}, ${checkin.unknownFrames}, ${checkin.verdict}, ${checkin.critical})
       ON CONFLICT (day, hour)
       DO UPDATE SET
         avg_score = EXCLUDED.avg_score,
         present_pct = EXCLUDED.present_pct,
         headphones_pct = EXCLUDED.headphones_pct,
+        unknown_frames = EXCLUDED.unknown_frames,
         verdict = EXCLUDED.verdict
-      RETURNING to_char(day, 'YYYY-MM-DD') AS day, hour, avg_score, present_pct, headphones_pct, verdict, critical
+      RETURNING to_char(day, 'YYYY-MM-DD') AS day, hour, avg_score, present_pct, headphones_pct, unknown_frames, verdict, critical
     `;
     return mapCheckin(result.rows[0]);
   }

@@ -35,7 +35,7 @@ function frame(id: string, capturedAt: string, score: number, present = true, he
 }
 
 function checkin(day: string, hour: number, avgScore: number, critical = false): HourlyCheckin {
-  return { day, hour, avgScore, presentPct: 100, headphonesPct: 0, verdict: "", critical };
+  return { day, hour, avgScore, presentPct: 100, headphonesPct: 0, unknownFrames: 0, verdict: "", critical };
 }
 
 test("framesByHour groups snapshots by local hour, preserving capture order", () => {

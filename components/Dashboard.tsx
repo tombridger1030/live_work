@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react";
 import dynamic from "next/dynamic";
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Headphones, HeadphoneOff, Star, TriangleAlert, User, UserX, type LucideIcon } from "lucide-react";
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Headphones, HeadphoneOff, HelpCircle, Star, TriangleAlert, User, UserX, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Calendar } from "@/components/ui/calendar";
@@ -102,9 +102,20 @@ function pctText(value: number): string {
 }
 
 function editableSignalsFor(snapshot: SnapshotRow): EditableSignal[] {
+  // A frame no model examined must not read as "No headphones" — that is the
+  // assertion this whole change exists to stop making. The chip stays clickable so
+  // Tom can supply the truth; it just no longer claims an answer nobody has.
+  const unseen = snapshot.visionRead === "unknown";
   return [
     { field: "present", on: snapshot.present, onLabel: "Present", offLabel: "Away", onIcon: User, offIcon: UserX },
-    { field: "headphones", on: snapshot.headphones, onLabel: "Headphones", offLabel: "No headphones", onIcon: Headphones, offIcon: HeadphoneOff }
+    {
+      field: "headphones",
+      on: snapshot.headphones,
+      onLabel: "Headphones",
+      offLabel: unseen ? "Headphones not checked" : "No headphones",
+      onIcon: Headphones,
+      offIcon: unseen ? HelpCircle : HeadphoneOff
+    }
   ];
 }
 
@@ -360,14 +371,24 @@ export function Dashboard({ data }: { data: DashboardData }) {
 
   const chartData = useMemo(() => {
     const byHour = new Map(data.hourly.map((checkin) => [checkin.hour, checkin]));
-    const rows: Array<{ hour: number; label: string; score: number; critical: boolean }> = [];
+    const rows: Array<{ hour: number; label: string; score: number; critical: boolean; incomplete: boolean }> = [];
     for (let hour = 0; hour < 24; hour += 1) {
       if (isQuietHour(hour)) continue;
       const checkin = byHour.get(hour);
-      rows.push({ hour, label: hourTick(hour), score: checkin?.avgScore ?? 0, critical: checkin?.critical ?? false });
+      rows.push({
+        hour,
+        label: hourTick(hour),
+        score: checkin?.avgScore ?? 0,
+        critical: checkin?.critical ?? false,
+        // Some frames this hour were never examined, so the bar understates it
+        // until Tom supplies the missing answer.
+        incomplete: (checkin?.unknownFrames ?? 0) > 0
+      });
     }
     return rows;
   }, [data.hourly]);
+
+  const incompleteHours = useMemo(() => chartData.filter((row) => row.incomplete).length, [chartData]);
 
   const liveFrameId = data.isToday && !data.settings.paused && !data.statusState.stale && data.latest ? data.latest.id : null;
   const isLive = selected !== null && liveFrameId !== null && selected.id === liveFrameId;
@@ -923,9 +944,18 @@ export function Dashboard({ data }: { data: DashboardData }) {
           valueFormatter={formatChartValue}
           className="h-56"
           markKey="critical"
+          flagKey="incomplete"
           selectedKey={activeHour !== null ? hourTick(activeHour) : undefined}
           onBarSelect={handleBarSelect}
         />
+        {incompleteHours > 0 ? (
+          <p className="mt-2 text-xs leading-5 text-amber-200/70">
+            <span className="font-semibold text-amber-400">?</span>{" "}
+            {incompleteHours === 1 ? "1 hour is" : `${incompleteHours} hours are`} missing headphone data — nothing
+            examined those frames, so the bar is lower than the hour really was. Open the hour and set headphones to
+            correct it.
+          </p>
+        ) : null}
       </div>
 
     </main>

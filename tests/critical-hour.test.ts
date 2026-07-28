@@ -23,7 +23,7 @@ const day = "2026-06-20";
 const hour = 10;
 
 function baseCheckin(): HourlyCheckin {
-  return { day, hour, avgScore: 70, presentPct: 100, headphonesPct: 50, verdict: "At desk", critical: false };
+  return { day, hour, avgScore: 70, presentPct: 100, headphonesPct: 50, unknownFrames: 0, verdict: "At desk", critical: false };
 }
 
 function postCritical(body: unknown): Promise<Response> {

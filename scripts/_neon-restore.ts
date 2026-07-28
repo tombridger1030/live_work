@@ -139,6 +139,7 @@ for (const row of checkinRows) {
     avgScore: Number(row.avg_score),
     presentPct: Number(row.present_pct),
     headphonesPct: Number(row.headphones_pct),
+        unknownFrames: 0,
     verdict: String(row.verdict),
     critical: Boolean(row.critical)
   };

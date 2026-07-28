@@ -7,12 +7,27 @@ export type Posture = (typeof postureValues)[number];
 export type SnapshotStatus = "locked_in" | "present" | "away";
 export type DisplayStatus = SnapshotStatus | "paused" | "no_recent_data";
 
+/**
+ * Whether any vision model actually examined the frame.
+ *
+ * `"unknown"` means every provider failed, so nothing looked — the headphone
+ * answer on such a row is a placeholder, NOT an observation. Aggregates must skip
+ * these rows rather than counting them as an explicit "no headphones", which is
+ * how 415 frames came to assert something nobody saw.
+ *
+ * Absent on legacy rows and treated as `"ok"`, so no migration is required.
+ */
+export type VisionReadStatus = "ok" | "unknown";
+
 export type Signals = {
   present: boolean;
   headphones: boolean;
   eyesOnScreen: boolean;
   posture: Posture;
   note: string;
+  // Absent = "ok". Only set to "unknown" by the capture path when the whole
+  // provider chain failed after local presence was already verified.
+  visionRead?: VisionReadStatus;
 };
 
 export type ScoreResult = {
@@ -51,7 +66,8 @@ export type HourlyCheckin = {
   hour: number;
   avgScore: number;
   presentPct: number;
-  headphonesPct: number;
+  headphonesPct: number; // over frames a model actually examined, not over every frame
+  unknownFrames: number; // frames this hour no model examined; >0 means the hour is incomplete and may need Tom's correction
   verdict: string;
   critical: boolean; // human-confirmed: this hour went to the most critical task
 };

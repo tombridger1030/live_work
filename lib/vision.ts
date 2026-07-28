@@ -573,10 +573,15 @@ export async function analyzeFrameWithProvider(jpeg: Uint8Array): Promise<FrameA
     return {
       signals: {
         present: true,
+        // headphones stays a boolean so the scoring contract stays strict, but
+        // visionRead marks it as a placeholder rather than an observation. Without
+        // that flag this row is indistinguishable from "a model looked and saw no
+        // headphones", which is how 415 frames came to assert something nobody saw.
         headphones: false,
         eyesOnScreen: false,
         posture: "unknown",
-        note: outOfCredits ? VISION_CREDITS_NOTE : VISION_UNAVAILABLE_NOTE
+        note: outOfCredits ? VISION_CREDITS_NOTE : VISION_UNAVAILABLE_NOTE,
+        visionRead: "unknown"
       },
       visionProvider: null
     };
