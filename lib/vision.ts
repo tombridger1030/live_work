@@ -85,7 +85,10 @@ export function isCreditsExhausted(message: string): boolean {
 // Normal captures use the local person detector for presence first, then ask the
 // VLM only for focus quality. This deliberately avoids letting the VLM hallucinate
 // presence on every ordinary frame.
-const SYSTEM_PROMPT =
+// Exported so the benchmark scores the EXACT prompt production sends. A copy in
+// the harness silently diverged once already, which makes every number it prints
+// a measurement of something the app does not do.
+export const SYSTEM_PROMPT =
   "You analyze a single webcam still for a public work-focus accountability page. " +
   "A person has ALREADY been detected at the desk in this frame, so do NOT judge presence. " +
   "Reply with ONLY a JSON object — no prose, no markdown fences — with exactly these keys: " +
