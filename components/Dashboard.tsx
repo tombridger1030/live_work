@@ -399,7 +399,18 @@ export function Dashboard({ data }: { data: DashboardData }) {
     activeCheckin?.presentPct ?? (activeFrames.length > 0 ? Math.round((activeFrames.filter((frame) => frame.present).length / activeFrames.length) * 100) : 0);
   const detailHeadphonesPct =
     activeCheckin?.headphonesPct ??
-    (activeFrames.length > 0 ? Math.round((activeFrames.filter((frame) => frame.headphones).length / activeFrames.length) * 100) : 0);
+    (activeFrames.length > 0
+      ? Math.round(
+          (activeFrames.filter((frame) => frame.visionRead !== "unknown" && frame.headphones).length /
+            Math.max(1, activeFrames.filter((frame) => frame.visionRead !== "unknown").length)) *
+            100
+        )
+      : 0);
+  // When nothing in the hour was examined there is no percentage to report, so the
+  // summary must not print "0% headphones" — that is the same false assertion this
+  // whole change exists to remove, just in a different place on the page.
+  const detailHeadphonesUnknown =
+    activeFrames.length > 0 && activeFrames.every((frame) => frame.visionRead === "unknown");
 
   const metrics = tab === "today" ? todayMetrics(data.stats, data.previousStats, data.isToday ? "vs yesterday at this time" : "vs yesterday") : averageMetrics(data.averages.last7, data.averages.previous7);
   // The snapshot as shown: the server row plus any optimistic correction, re-scored
@@ -778,7 +789,14 @@ export function Dashboard({ data }: { data: DashboardData }) {
                   <span className="pb-0.5 text-sm text-zinc-500">avg</span>
                 </div>
                 <p className="mt-2 text-sm text-zinc-500">
-                  <Num>{String(detailPresentPct)}</Num>% present · <Num>{String(detailHeadphonesPct)}</Num>% headphones
+                  <Num>{String(detailPresentPct)}</Num>% present ·{" "}
+                  {detailHeadphonesUnknown ? (
+                    <span className="text-amber-200/80">headphones not checked</span>
+                  ) : (
+                    <>
+                      <Num>{String(detailHeadphonesPct)}</Num>% headphones
+                    </>
+                  )}
                 </p>
               </div>
             </div>
