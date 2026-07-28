@@ -1,3 +1,4 @@
+import { presenceMinScore } from "@/lib/presence";
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import sharp from "sharp";
@@ -71,5 +72,40 @@ test("analyzeFrame reports away (no VLM call) when no person is present", async 
     if (prevFixture !== undefined) {
       process.env.WORK_LIVE_VISION_FIXTURE = prevFixture;
     }
+  }
+});
+
+// The accept threshold is calibrated data, not a taste call: swept on 2026-07-27
+// against 73 frames the owner confirmed he was present in and 8 he confirmed were
+// an empty chair. 0.5 recovered 41/73; 0.35 recovers 50/73 with the same 0/8 false
+// alarms, because empty chairs score below the 0.15 model floor. The detector's
+// blind spot is a downturned head in dim light — the deep-work posture — and at
+// 0.5 that cost ~6.1 hours wrongly scored as away. Raising it silently would
+// re-lose those frames, so the value is pinned here.
+test("the default presence threshold stays at the calibrated 0.35", () => {
+  const prev = process.env.WORK_LIVE_PRESENCE_MIN_SCORE;
+  delete process.env.WORK_LIVE_PRESENCE_MIN_SCORE;
+  try {
+    expect(presenceMinScore()).toBe(0.35);
+  } finally {
+    if (prev !== undefined) process.env.WORK_LIVE_PRESENCE_MIN_SCORE = prev;
+  }
+});
+
+// Per-camera tuning must work, but a malformed value must never silently widen or
+// close the gate — it falls back to the calibrated default.
+test("presence threshold honors a valid override and rejects malformed ones", () => {
+  const prev = process.env.WORK_LIVE_PRESENCE_MIN_SCORE;
+  try {
+    process.env.WORK_LIVE_PRESENCE_MIN_SCORE = "0.6";
+    expect(presenceMinScore()).toBe(0.6);
+
+    for (const bad of ["0", "-1", "1.5", "abc", ""]) {
+      process.env.WORK_LIVE_PRESENCE_MIN_SCORE = bad;
+      expect(presenceMinScore()).toBe(0.35);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.WORK_LIVE_PRESENCE_MIN_SCORE;
+    else process.env.WORK_LIVE_PRESENCE_MIN_SCORE = prev;
   }
 });

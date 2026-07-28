@@ -31,7 +31,22 @@ const PERSON_LABEL = "person";
 // Default confidence a "person" box must clear to count as present. Overridable
 // via WORK_LIVE_PRESENCE_MIN_SCORE (clamped to 0<x<=1) so strictness can be
 // tuned per camera/lighting without a code change.
-const DEFAULT_MIN_SCORE = 0.5;
+//
+// 0.35, not 0.5, and the number is measured rather than picked. Swept against
+// the owner's labelled corpus on 2026-07-27 — 73 frames he confirmed he was
+// present in, 8 he confirmed were an empty chair:
+//   0.50 -> recovers 41/73, 0/8 false alarms
+//   0.35 -> recovers 50/73, 0/8 false alarms
+// Empty chairs score below the 0.15 model floor, so the band between "head down
+// in dim light" and "nobody there" is wide; 0.35 sits inside it. The detector's
+// systematic weakness is a downturned head in low light — exactly the deep-work
+// posture — which cost ~6.1 hours wrongly scored as away.
+//
+// Deliberately NOT lower: this is a public accountability record, where claiming
+// unworked time is worse than missing worked time. The two frames in the 0.30-0.50
+// band that looked genuinely empty were late-night and dimly lit, so the floor
+// stays well above them.
+const DEFAULT_MIN_SCORE = 0.35;
 // Floor passed to the model so borderline boxes are still returned and the real
 // accept/reject cutoff stays in ONE place (the env-tunable threshold below).
 const MODEL_SCORE_FLOOR = 0.15;
@@ -142,11 +157,20 @@ export async function detectPresence(frame: Uint8Array): Promise<PresenceResult>
     }
   }
 
-  const rawThreshold = getOptionalEnv("WORK_LIVE_PRESENCE_MIN_SCORE");
-  const parsedThreshold = rawThreshold ? Number(rawThreshold) : Number.NaN;
-  const threshold =
-    Number.isFinite(parsedThreshold) && parsedThreshold > 0 && parsedThreshold <= 1
-      ? parsedThreshold
-      : DEFAULT_MIN_SCORE;
-  return { present: best >= threshold, score: best };
+  return { present: best >= presenceMinScore(), score: best };
+}
+
+/**
+ * The confidence a "person" box must reach to count as present.
+ *
+ * Reads WORK_LIVE_PRESENCE_MIN_SCORE, accepting only a finite number in (0, 1];
+ * anything else (unset, blank, junk, 0, >1) falls back to DEFAULT_MIN_SCORE.
+ * Exported so the calibrated default is pinned by a test rather than resting on
+ * a comment — raising it silently would re-lose the head-down frames it was
+ * lowered to catch.
+ */
+export function presenceMinScore(): number {
+  const raw = getOptionalEnv("WORK_LIVE_PRESENCE_MIN_SCORE");
+  const parsed = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : DEFAULT_MIN_SCORE;
 }
