@@ -52,6 +52,11 @@ beforeAll(() => {
           return reply("");
         case "m-badjson":
           return reply("the model said no");
+        // Answers, but admits it cannot tell — the escalation trigger.
+        case "m-unsure":
+          return reply(JSON.stringify({ present: true, headphones: false, confident: false, note: "too dark to tell" }));
+        case "m-unsure-2":
+          return reply(JSON.stringify({ present: true, headphones: true, confident: false, note: "maybe headphones" }));
         case "m-ok":
         case "m-ok-2":
           return reply(OK_PAYLOAD);
@@ -254,4 +259,51 @@ test("the default OpenRouter model list spans more than one model", async () => 
 
   expect(attempted.length).toBeGreaterThan(1);
   expect(signals.note).toBe(VISION_UNAVAILABLE_NOTE);
+});
+
+// Escalation on UNCERTAINTY, not just on failure. A model that answers but admits
+// it cannot tell (dark frame, headphones behind hair or a cap) used to have its
+// guess recorded as fact. It now hands the frame to the next, stronger model.
+test("an unsure model escalates to the next model", async () => {
+  process.env.WORK_LIVE_VISION_PROVIDERS = "openrouter";
+  process.env.OPENROUTER_KEY = "test-openrouter-key";
+  process.env.WORK_LIVE_OPENROUTER_BASE_URL = baseURL;
+  process.env.WORK_LIVE_OPENROUTER_VISION_MODEL = "m-unsure,m-ok-2";
+
+  const result = await analyzeFrameWithProvider(faceFixture);
+
+  expect(result.signals.note).toBe("mock ok");
+  expect(hits.get("m-unsure")).toBe(1);
+  expect(hits.get("m-ok-2")).toBe(1);
+});
+
+// Confidence must not cost anything on the ordinary frame: a confident first
+// answer stops the chain, so the stronger model is never billed for easy frames.
+test("a confident first answer never reaches the stronger model", async () => {
+  process.env.WORK_LIVE_VISION_PROVIDERS = "openrouter";
+  process.env.OPENROUTER_KEY = "test-openrouter-key";
+  process.env.WORK_LIVE_OPENROUTER_BASE_URL = baseURL;
+  process.env.WORK_LIVE_OPENROUTER_VISION_MODEL = "m-ok,m-unsure";
+
+  const before = hits.get("m-unsure") ?? 0;
+  const result = await analyzeFrameWithProvider(faceFixture);
+
+  expect(result.signals.note).toBe("mock ok");
+  expect(hits.get("m-unsure") ?? 0).toBe(before);
+});
+
+// When everyone hesitates, the LAST (strongest) opinion is kept rather than the
+// cheapest guess — and crucially it is still an answer, not the conservative
+// "no headphones" fallback that a thrown error would produce.
+test("when every model is unsure the strongest answer is kept", async () => {
+  process.env.WORK_LIVE_VISION_PROVIDERS = "openrouter";
+  process.env.OPENROUTER_KEY = "test-openrouter-key";
+  process.env.WORK_LIVE_OPENROUTER_BASE_URL = baseURL;
+  process.env.WORK_LIVE_OPENROUTER_VISION_MODEL = "m-unsure,m-unsure-2";
+
+  const result = await analyzeFrameWithProvider(faceFixture);
+
+  expect(result.signals.headphones).toBe(true);
+  expect(result.signals.note).toBe("maybe headphones");
+  expect(result.signals.note).not.toBe(VISION_UNAVAILABLE_NOTE);
 });

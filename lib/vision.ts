@@ -23,6 +23,11 @@ const looseNote = z.preprocess((value) => {
 // clamped because the public page still shows it.
 const signalSchema = z.object({
   headphones: z.boolean(),
+  // Self-reported certainty, used ONLY to decide whether to ask a stronger model.
+  // Optional and defaulting to "sure" on purpose: a model that ignores the field
+  // (or returns junk for it) must cost nothing extra rather than escalating every
+  // frame. It is never persisted — only the resulting answer is.
+  confident: z.boolean().optional().default(true),
   note: looseNote,
 });
 const auditSignalSchema = z.object({
@@ -35,15 +40,29 @@ const auditSignalSchema = z.object({
 const DEFAULT_QWEN_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 const DEFAULT_QWEN_VISION_MODEL = "qwen3.6-flash";
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-// Ordered failover list, chosen by benchmark against the owner's own 154
-// corrected frames plus a live reliability probe (2026-07-27). Both score 98.9%
-// balanced accuracy with 100% specificity; they are listed in cost order and sit
-// on INDEPENDENT upstream providers (ByteDance, Amazon), so one provider's 502s
-// cannot silence vision. Reliability is weighted above raw accuracy here: a
-// failed call is recorded as "no headphones", so an unreliable model corrupts the
-// record. nex-agi/nex-n2-mini was rejected for exactly that reason — same
-// accuracy, but 18% of live calls returned 502.
-const DEFAULT_OPENROUTER_VISION_MODELS = ["bytedance-seed/seed-1.6-flash", "amazon/nova-2-lite-v1"];
+// Ordered chain, tried until a model answers CONFIDENTLY. Chosen by benchmark
+// against the owner's own 154 corrected frames plus live reliability probes
+// (2026-07-27). All three sit on INDEPENDENT upstream providers, so one vendor
+// cannot silence vision.
+//
+// Reliability outranks both accuracy and price here, because a failed call is
+// recorded as "no headphones" — an unreliable model does not just cost less
+// information, it writes a false record. Two models were demoted on that basis:
+//   nex-agi/nex-n2-mini      — same 98.9% accuracy, 1/10th the price, but 18% of
+//                              live calls returned 502. Rejected outright.
+//   bytedance-seed/seed-1.6-flash — 98.9% and cheapest of the reliable set, but
+//                              measured 429 rate-limiting under sustained use, so
+//                              it is the backup rather than the primary.
+// amazon/nova-2-lite-v1 leads on 26/26 clean live calls at 98.9% accuracy; the
+// ~$0.40/month it costs over seed is not worth a false record.
+//
+// gemini-2.5-flash is last on purpose: it is the second opinion for frames the
+// cheaper models admit they cannot read, so it is only paid for when it matters.
+const DEFAULT_OPENROUTER_VISION_MODELS = [
+  "amazon/nova-2-lite-v1",
+  "bytedance-seed/seed-1.6-flash",
+  "google/gemini-2.5-flash"
+];
 // Notes written when the frame was captured and a person WAS detected locally, but
 // no vision model could read it. Exported because the dashboard classifies vision
 // health by matching them — the strings must have exactly one definition.
@@ -70,7 +89,11 @@ const SYSTEM_PROMPT =
   "You analyze a single webcam still for a public work-focus accountability page. " +
   "A person has ALREADY been detected at the desk in this frame, so do NOT judge presence. " +
   "Reply with ONLY a JSON object — no prose, no markdown fences — with exactly these keys: " +
-  "headphones (boolean: the person is wearing over-ear or in-ear headphones), " +
+  "headphones (boolean: the person is wearing over-ear or in-ear headphones — in-ear buds count, " +
+  "and they can be hidden by hair, a hood, or a cap), " +
+  "confident (boolean: false when the frame is too dark, blurry, or occluded for you to be sure " +
+  "about headphones — answering false costs you nothing and sends the frame to a stronger model, " +
+  "so say it rather than guessing), " +
   "note (a short plain sentence describing what you see; max 160 characters).";
 
 // Long-run audits are different: they exist to challenge a status that has stayed
@@ -84,8 +107,6 @@ const AUDIT_SYSTEM_PROMPT =
   "present (boolean), headphones (boolean), note (a short plain sentence explaining the visual evidence; max 160 characters).";
 
 
-// Pull the JSON object out of a model reply, tolerating code fences or stray
-// prose so an occasional non-pure reply still validates instead of 502-ing.
 function extractJsonObject(content: string): string {
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const body = fenced ? fenced[1] : content;
@@ -97,7 +118,17 @@ function extractJsonObject(content: string): string {
   return body.slice(start, end + 1);
 }
 
-export function parseSignals(content: string | null | undefined): Signals {
+/**
+ * A model's answer plus whether it said it was sure.
+ *
+ * Certainty exists only to decide whether to ask a stronger model; it is never
+ * persisted, so an unsure answer that survives escalation is stored exactly like
+ * a confident one.
+ */
+export type VisionRead = { signals: Signals; confident: boolean };
+
+/** Focus-quality answer with the model's self-reported certainty. */
+export function parseFocusRead(content: string | null | undefined): VisionRead {
   if (!content || content.trim().length === 0) {
     throw new VisionAnalysisError("Vision model returned no content");
   }
@@ -118,12 +149,20 @@ export function parseSignals(content: string | null | undefined): Signals {
     );
   }
   return {
-    present: true,
-    headphones: result.data.headphones,
-    eyesOnScreen: false,
-    posture: "unknown",
-    note: result.data.note,
+    signals: {
+      present: true,
+      headphones: result.data.headphones,
+      eyesOnScreen: false,
+      posture: "unknown",
+      note: result.data.note,
+    },
+    confident: result.data.confident,
   };
+}
+
+/** The focus answer alone, for callers that do not act on certainty. */
+export function parseSignals(content: string | null | undefined): Signals {
+  return parseFocusRead(content).signals;
 }
 export function parsePresenceAudit(content: string | null | undefined): Signals {
   if (!content || content.trim().length === 0) {
@@ -265,8 +304,8 @@ async function analyzeViaProvider(
   jpeg: Uint8Array,
   systemPrompt = SYSTEM_PROMPT,
   userText = "Return the focus-signals JSON for this frame.",
-  parse = parseSignals,
-): Promise<Signals> {
+  parse: (content: string | null | undefined) => VisionRead = parseFocusRead,
+): Promise<VisionRead> {
   // maxRetries: 0 — with multi-provider failover the NEXT provider is the retry.
   // Retrying an exhausted/429 provider here just burns the serverless invocation
   // (and caused the outage where every capture stalled on a dead Qwen) before we
@@ -316,7 +355,7 @@ async function analyzeWithVisionProviders(
   jpeg: Uint8Array,
   systemPrompt = SYSTEM_PROMPT,
   userText = "Return the focus-signals JSON for this frame.",
-  parse = parseSignals,
+  parse: (content: string | null | undefined) => VisionRead = parseFocusRead,
 ): Promise<VisionProviderResult> {
   const providers = configuredVisionProviders();
   if (providers.length === 0) {
@@ -324,16 +363,29 @@ async function analyzeWithVisionProviders(
   }
 
   const failures: string[] = [];
+  // An unsure answer is kept but not returned yet: the list is ordered cheap
+  // first, so the next model is a second opinion worth paying for on a hard
+  // frame. Overwritten each time so that if EVERY model hesitates we keep the
+  // last (strongest) one's answer rather than the cheapest guess.
+  let unsure: VisionProviderResult | null = null;
   for (const provider of providers) {
     try {
-      const signals = await analyzeViaProvider(provider, jpeg, systemPrompt, userText, parse);
-      return { signals, provider: provider.name };
+      const read = await analyzeViaProvider(provider, jpeg, systemPrompt, userText, parse);
+      if (read.confident) {
+        return { signals: read.signals, provider: provider.name };
+      }
+      unsure = { signals: read.signals, provider: provider.name };
+      console.warn(`[work-live] Vision model ${provider.model} was unsure; escalating to the next model`);
     } catch (error) {
       const message = error instanceof VisionAnalysisError ? error.message : (error as Error).message;
       failures.push(message);
       console.warn("[work-live] Vision provider failed:", message);
     }
   }
+
+  // Every model hesitated, but an answer we can attribute is still better than
+  // the conservative "no headphones" fallback a throw would produce.
+  if (unsure) return unsure;
 
   throw new VisionAnalysisError(`Vision providers failed: ${failures.join("; ")}`);
 }
@@ -432,7 +484,10 @@ async function analyzePresenceAudit(small: Uint8Array): Promise<VisionProviderRe
     small,
     AUDIT_SYSTEM_PROMPT,
     "Return the audited presence JSON for this frame.",
-    parsePresenceAudit
+    // The audit has no escalation step: its prompt already instructs the model to
+    // answer present=false when uncertain, so hesitation is the ANSWER here rather
+    // than a reason to ask someone else.
+    (content) => ({ signals: parsePresenceAudit(content), confident: true })
   );
 }
 
