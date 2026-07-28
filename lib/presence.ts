@@ -31,7 +31,32 @@ const PERSON_LABEL = "person";
 // Default confidence a "person" box must clear to count as present. Overridable
 // via WORK_LIVE_PRESENCE_MIN_SCORE (clamped to 0<x<=1) so strictness can be
 // tuned per camera/lighting without a code change.
-const DEFAULT_MIN_SCORE = 0.5;
+//
+// 0.35, not 0.5, and the number is measured rather than picked. Swept against
+// the owner's labelled corpus on 2026-07-27 — 73 frames he confirmed he was
+// present in, 8 he confirmed were an empty chair:
+//   0.50 -> recovers 41/73, 0/8 false alarms
+//   0.35 -> recovers 50/73, 0/8 false alarms
+// Empty chairs score below the 0.15 model floor, so the band between "head down
+// in dim light" and "nobody there" is wide; 0.35 sits inside it. The detector's
+// systematic weakness is a downturned head in low light — exactly the deep-work
+// posture — which cost ~6.1 hours wrongly scored as away.
+//
+// Deliberately NOT lower: this is a public accountability record, where claiming
+// unworked time is worse than missing worked time. The two frames in the 0.30-0.50
+// band that looked genuinely empty were late-night and dimly lit — which is what
+// DIM_FRAME_MIN_SCORE below exists to handle.
+const DEFAULT_MIN_SCORE = 0.35;
+// The bar a frame must clear when the readability gate flags it as dim or
+// colour-cast. HIGHER than normal on purpose: a dim frame is exactly where the
+// detector is least trustworthy, so it must prove more, rather than being thrown
+// away unseen (which is what used to happen and cost real night-time work).
+//
+// Measured 2026-07-27 on the owner's night frames under purple LED lighting:
+//   EMPTY chair (silhouette reads as a torso)  -> 0.36, 0.36, 0.38, 0.41, 0.43
+//   owner actually at the desk                 -> 0.60, 0.73, 0.77, 0.81, 0.84
+// 0.55 sits in that gap. Override with WORK_LIVE_PRESENCE_DIM_MIN_SCORE.
+const DIM_FRAME_MIN_SCORE = 0.55;
 // Floor passed to the model so borderline boxes are still returned and the real
 // accept/reject cutoff stays in ONE place (the env-tunable threshold below).
 const MODEL_SCORE_FLOOR = 0.15;
@@ -108,7 +133,7 @@ function loadModel(): Promise<cocoSsd.ObjectDetection> {
  * Preconditions: `frame` is a single decodable image (JPEG/PNG/...). The caller
  * typically passes a downscaled frame so detection is cheap.
  * Postconditions: `present` is true when the strongest "person" detection clears
- * the accept threshold (`WORK_LIVE_PRESENCE_MIN_SCORE`, default 0.5); `score` is
+ * the accept threshold (`WORK_LIVE_PRESENCE_MIN_SCORE`, default 0.35); `score` is
  * that confidence (0 when none). An absent person — an empty chair, an empty
  * room — returns `{ present: false, score: 0 }`, which the caller treats as
  * "away". Never throws for "no person"; throws only when the backend/model
@@ -142,11 +167,36 @@ export async function detectPresence(frame: Uint8Array): Promise<PresenceResult>
     }
   }
 
-  const rawThreshold = getOptionalEnv("WORK_LIVE_PRESENCE_MIN_SCORE");
-  const parsedThreshold = rawThreshold ? Number(rawThreshold) : Number.NaN;
-  const threshold =
-    Number.isFinite(parsedThreshold) && parsedThreshold > 0 && parsedThreshold <= 1
-      ? parsedThreshold
-      : DEFAULT_MIN_SCORE;
-  return { present: best >= threshold, score: best };
+  return { present: best >= presenceMinScore(), score: best };
+}
+
+/** How readable the frame is, which decides which calibrated bar applies. */
+export type FrameQuality = "normal" | "dim";
+
+/**
+ * The confidence a "person" box must reach for a frame to count as present.
+ *
+ * `"normal"` reads WORK_LIVE_PRESENCE_MIN_SCORE, `"dim"` reads
+ * WORK_LIVE_PRESENCE_DIM_MIN_SCORE; each accepts only a finite number in (0, 1]
+ * and otherwise falls back to its calibrated default. Both bars live here so the
+ * numbers, their evidence, and their parsing rule stay in one place — raising
+ * either silently would re-lose the frames they were tuned to catch.
+ *
+ * Invariant, ENFORCED rather than merely documented: the dim bar is never below
+ * the normal one. The two variables are independent, so an operator could
+ * otherwise configure a dim threshold that admits frames the normal gate would
+ * reject — turning the empty-chair silhouettes the split exists to exclude
+ * (0.36-0.43 under coloured light) into recorded working time. A too-low dim
+ * override is raised to the normal bar instead of being honoured.
+ */
+export function presenceMinScore(quality: FrameQuality = "normal"): number {
+  const normal = envScore("WORK_LIVE_PRESENCE_MIN_SCORE", DEFAULT_MIN_SCORE);
+  if (quality !== "dim") return normal;
+  return Math.max(envScore("WORK_LIVE_PRESENCE_DIM_MIN_SCORE", DIM_FRAME_MIN_SCORE), normal);
+}
+
+function envScore(name: string, fallback: number): number {
+  const raw = getOptionalEnv(name);
+  const parsed = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : fallback;
 }

@@ -37,6 +37,10 @@ type BarChartProps = {
   className?: string;
   onBarSelect?: (datum: ChartDatum) => void;
   markKey?: string;
+  // Row key whose truthiness marks the bar as INCOMPLETE (data missing) rather
+  // than low. Rendered as an amber "?" so a bar that understates reality is never
+  // mistaken for a genuinely bad hour.
+  flagKey?: string;
   selectedKey?: string;
 };
 
@@ -110,6 +114,7 @@ function BarChartImpl({
   className,
   onBarSelect,
   markKey,
+  flagKey,
   selectedKey
 }: BarChartProps) {
   const categoryColors = constructCategoryColors(categories, colors);
@@ -191,6 +196,20 @@ function BarChartImpl({
                 }
               }}
             >
+              {flagKey ? (
+                <LabelList
+                  dataKey={flagKey}
+                  position="top"
+                  // Amber "?" marks an hour whose data is INCOMPLETE rather than bad:
+                  // some frames were never examined, so the bar understates it until
+                  // the owner supplies the missing answer.
+                  formatter={(value: unknown) => (value === true || value === 1 || value === "true" ? "?" : "")}
+                  fill="#fbbf24"
+                  fontSize={13}
+                  fontWeight={700}
+                  offset={4}
+                />
+              ) : null}
               {markKey ? (
                 <LabelList
                   dataKey={markKey}
@@ -198,7 +217,7 @@ function BarChartImpl({
                   formatter={(value: unknown) => (value === true || value === 1 || value === "true" ? "★" : "")}
                   fill="#45d977"
                   fontSize={12}
-                  offset={4}
+                  offset={flagKey ? 16 : 4}
                 />
               ) : null}
               {selectedKey ? (
@@ -208,7 +227,7 @@ function BarChartImpl({
                   formatter={(value: unknown) => (value === selectedKey ? "▲" : "")}
                   fill="#e4e4e7"
                   fontSize={10}
-                  offset={markKey ? 16 : 4}
+                  offset={(markKey ? 16 : 4) + (flagKey ? 12 : 0)}
                 />
               ) : null}
             </Bar>

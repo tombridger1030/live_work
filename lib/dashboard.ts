@@ -3,6 +3,7 @@ import { dailyHistory, daysWithData, getSettings, hourlyForDay, latestSnapshot, 
 import { appTimeZone, captureIntervalMinutes, isScoringHour, localDayKey, localHour } from "@/lib/time";
 import { publicStatusFor, type PublicStatusState } from "@/lib/status";
 import type { AverageStats, AverageWindow, DayHistory, HourlyCheckin, Settings, SnapshotRow, TodayStats } from "@/lib/types";
+import { visionHealthFrom, type VisionHealth } from "@/lib/vision-health";
 
 
 // Cache the slow, mostly historical reads (a year-wide aggregate, old per-day
@@ -37,6 +38,7 @@ export type DashboardData = {
   previousStats: TodayStats | null; // Today baseline: prior day at same local time; historical baseline: full prior day
   history: DayHistory[]; // recent per-day focus aggregates for the heatmap, newest first
   averages: AverageStats; // rolling 7/30-day averages over recent present days
+  vision: VisionHealth; // whether the vision model is reading frames right now; drives the outage banner
 };
 
 const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
@@ -310,6 +312,8 @@ export async function getDashboardData(now = new Date(), requestedDay?: string):
     stats: dayStats(daySnapshots, hourly),
     averages,
     previousStats,
-    history
+    history,
+    // Only meaningful for today: a past day's outage is history, not a live alarm.
+    vision: isToday ? visionHealthFrom(daySnapshots, now) : { status: "ok" as const, failing: 0, since: null }
   };
 }

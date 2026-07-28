@@ -1,373 +1,175 @@
+// Scores vision models against the owner's OWN corrected frames — the set where
+// production actually failed and a human overruled it.
+//
+// Two things this deliberately does differently from a naive benchmark:
+//
+//  1. It imports SYSTEM_PROMPT and parseFocusRead from lib/vision rather than
+//     copying them. A previous harness kept its own copy of the prompt, silently
+//     diverged from production, and every number it printed described an app that
+//     did not exist.
+//
+//  2. It scores balanced accuracy, not raw accuracy. The corrections corpus is
+//     ~134 "yes headphones" to ~20 "no", so a model that always answers yes looks
+//     97% correct while being useless. recall catches "does it find his
+//     headphones", specificity catches "does it invent them", and only the pair
+//     is meaningful.
+//
+// Modes:
+//   (default)      score each model in BENCH_MODELS independently
+//   --chain        score the production chain end-to-end, measuring what the
+//                  unsure-escalation actually buys over the first model alone
+//
+// Usage:
+//   OWNER_SECRET=... WORK_LIVE_DATA_DIR=... bun run scripts/benchmark-vision-models.ts --chain
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import OpenAI from "openai";
-import { sql } from "@/lib/sql";
-import { snapshotThumbnailBytes } from "@/lib/store";
-import { parseSignals } from "@/lib/vision";
+import { SYSTEM_PROMPT, VISION_MAX_RETRIES, VISION_MAX_TOKENS, VISION_TEMPERATURE, parseFocusRead } from "@/lib/vision";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-const DEFAULT_PUBLIC_URL = "https://tally-focus.vercel.app";
-const DEFAULT_LOCAL_BASE_URL = "http://localhost:3100";
-const DEFAULT_MODELS = [
-  "qwen/qwen3.5-flash-02-23",
-  "google/gemma-3-4b-it",
-  "mistralai/mistral-small-3.2-24b-instruct",
-  "openai/gpt-5-nano"
-];
-const DEFAULT_CALLS_PER_DAY = [60, 120, 180];
-const SYSTEM_PROMPT =
-  "You analyze a single webcam still for a public work-focus accountability page. " +
-  "A person has ALREADY been detected at the desk in this frame, so do NOT judge presence. " +
-  "Reply with ONLY a JSON object — no prose, no markdown fences — with exactly these keys: " +
-  "headphones (boolean: the person is wearing over-ear or in-ear headphones), " +
-  "note (a short plain sentence describing what you see; max 160 characters).";
 const USER_TEXT = "Return the focus-signals JSON for this frame.";
+// Mirrors lib/vision's production chain: cheap+reliable first, strong last.
+const DEFAULT_CHAIN = ["amazon/nova-2-lite-v1", "bytedance-seed/seed-1.6-flash", "google/gemini-2.5-flash"];
 
-type BenchmarkSource = "postgres" | "public" | "local";
+const chainMode = process.argv.includes("--chain");
+const models = (process.env.BENCH_MODELS ?? DEFAULT_CHAIN.join(",")).split(",").map((m) => m.trim()).filter(Boolean);
+const concurrency = Number(process.env.BENCH_CONCURRENCY ?? 8);
+const maxTrue = Number(process.env.BENCH_MAX_TRUE ?? 1000);
+const dir = process.env.WORK_LIVE_DATA_DIR ?? path.join(process.cwd(), ".work-live");
+const base = process.env.WORK_LIVE_BASE_URL ?? "http://localhost:3100";
 
-type BenchmarkArgs = {
-  limit: number;
-  minGold: number;
-  models: string[];
-  callsPerDay: number[];
-  source: BenchmarkSource;
-  publicUrl: string;
-  baseUrl: string;
-};
-
-type EvalFrame = {
+type Case = {
   id: string;
   capturedAt: string;
   headphones: boolean;
-  humanVerified: boolean;
-  thumbUrl: string | null;
+  correctedFields: string[];
+  modelSaid: { headphones?: boolean };
 };
 
-type ModelPricing = {
-  prompt: number;
-  completion: number;
-};
+const response = await fetch(`${base}/api/eval-cases?limit=1000`, {
+  headers: { Authorization: `Bearer ${process.env.OWNER_SECRET ?? ""}` }
+});
+if (!response.ok) throw new Error(`eval-cases returned ${response.status} — is the server running and OWNER_SECRET set?`);
+const { cases }: { cases: Case[] } = await response.json();
 
-type ModelResult = {
-  model: string;
-  evaluated: number;
-  correct: number;
-  accuracy: number | null;
-  errors: number;
-  meanPromptTokens: number | null;
-  meanCompletionTokens: number | null;
-  meanCostUsd: number | null;
-  monthly: { callsPerDay: number; costUsd: number | null }[];
-};
+const labelled = cases.filter((entry) => entry.correctedFields.includes("headphones"));
+const positives = labelled.filter((entry) => entry.headphones);
+const negatives = labelled.filter((entry) => !entry.headphones);
+// Every negative is kept — they are the scarce class and the only thing that
+// catches a yes-biased model. Positives are sampled evenly across time so one
+// long session cannot dominate the score.
+const step = Math.max(1, Math.ceil(positives.length / maxTrue));
+const frames = [...positives.filter((_, index) => index % step === 0).slice(0, maxTrue), ...negatives]
+  .filter((entry) => existsSync(path.join(dir, "thumbs", `${entry.id}.jpg`)));
 
-function argValue(name: string): string | null {
-  const index = Bun.argv.indexOf(name);
-  return index === -1 ? null : Bun.argv[index + 1] ?? null;
-}
+console.log(`corpus: ${frames.length} frames (${frames.filter((f) => f.headphones).length} wearing / ${frames.filter((f) => !f.headphones).length} not)\n`);
 
-function numberList(value: string | null, fallback: number[]): number[] {
-  if (!value) {
-    return fallback;
-  }
-  return value.split(",").map((part) => Number(part.trim())).filter((part) => Number.isFinite(part) && part > 0);
-}
+const client = new OpenAI({
+  apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY,
+  baseURL: OPENROUTER_BASE_URL,
+  defaultHeaders: { "X-Title": "work-live benchmark" },
+  // Must match production: the SDK retries twice by default, which would make a
+  // flaky provider look reliable here and hide those calls from the counter below.
+  maxRetries: VISION_MAX_RETRIES
+});
 
-function configuredSource(): BenchmarkSource {
-  const configured = argValue("--source");
-  if (configured === "postgres" || configured === "public" || configured === "local") {
-    return configured;
-  }
-  // Self-host is the normal deployment now: with no Postgres, read gold labels
-  // from the local server's eval export rather than scraping pseudo-labels.
-  return process.env.POSTGRES_URL || process.env.DATABASE_URL ? "postgres" : "local";
-}
+const images = new Map<string, string>();
+for (const frame of frames) images.set(frame.id, (await readFile(path.join(dir, "thumbs", `${frame.id}.jpg`))).toString("base64"));
 
-function parseArgs(): BenchmarkArgs {
-  return {
-    limit: Number(argValue("--limit") ?? 24),
-    minGold: Number(argValue("--min-gold") ?? 8),
-    models: (argValue("--models")?.split(",").map((model) => model.trim()).filter(Boolean)) ?? DEFAULT_MODELS,
-    callsPerDay: numberList(argValue("--calls-per-day"), DEFAULT_CALLS_PER_DAY),
-    source: configuredSource(),
-    publicUrl: argValue("--public-url") ?? process.env.WORK_LIVE_PUBLIC_URL ?? process.env.WORK_LIVE_BASE_URL ?? DEFAULT_PUBLIC_URL,
-    baseUrl: argValue("--base-url") ?? process.env.WORK_LIVE_BASE_URL ?? DEFAULT_LOCAL_BASE_URL
-  };
-}
+type Answer = { headphones: boolean; confident: boolean };
 
-function requireOpenRouterKey(): string {
-  const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY;
-  if (!apiKey || apiKey.trim().length === 0) {
-    throw new Error("Missing OPENROUTER_API_KEY or OPENROUTER_KEY. Set it in local env before running the benchmark; never paste it into chat.");
-  }
-  return apiKey;
-}
-
-async function openRouterPricing(models: string[]): Promise<Map<string, ModelPricing>> {
-  const response = await fetch(`${OPENROUTER_BASE_URL}/models`);
-  if (!response.ok) {
-    throw new Error(`OpenRouter model list failed: ${response.status}`);
-  }
-  const body = (await response.json()) as { data: { id: string; pricing?: { prompt?: string; completion?: string } }[] };
-  const wanted = new Set(models);
-  return new Map(
-    body.data
-      .filter((model) => wanted.has(model.id))
-      .map((model) => [
-        model.id,
-        {
-          prompt: Number(model.pricing?.prompt ?? 0),
-          completion: Number(model.pricing?.completion ?? 0)
-        }
-      ])
-  );
-}
-
-async function postgresRows(query: "gold" | "pseudo", limit: number): Promise<EvalFrame[]> {
-  const result = query === "gold"
-    ? await sql`
-        SELECT id, captured_at, headphones, COALESCE(human_verified, FALSE) AS human_verified
-        FROM snapshots
-        WHERE human_verified IS TRUE AND present IS TRUE
-        ORDER BY captured_at DESC
-        LIMIT ${limit}
-      `
-    : await sql`
-        SELECT id, captured_at, headphones, COALESCE(human_verified, FALSE) AS human_verified
-        FROM snapshots
-        WHERE present IS TRUE AND COALESCE(capture_source, '') <> 'absent'
-        ORDER BY captured_at DESC
-        LIMIT ${limit}
-      `;
-
-  return result.rows.map((row) => ({
-    id: String(row.id),
-    capturedAt: new Date(row.captured_at as string | Date).toISOString(),
-    headphones: Boolean(row.headphones),
-    humanVerified: Boolean(row.human_verified),
-    thumbUrl: null
-  }));
-}
-
-async function publicRows(publicUrl: string, limit: number): Promise<EvalFrame[]> {
-  const response = await fetch(publicUrl);
-  if (!response.ok) {
-    throw new Error(`Public benchmark source failed: ${response.status}`);
-  }
-
-  const decoded = (await response.text()).replaceAll('\\"', '"');
-  const matches = decoded.matchAll(
-    /"id":"([0-9a-f-]+)","capturedAt":"([^"]+)","present":true,"headphones":(true|false),[\s\S]*?"thumbUrl":"([^"]+)"/g
-  );
-  const byId = new Map<string, EvalFrame>();
-  for (const match of matches) {
-    const [, id, capturedAt, headphones, thumbUrl] = match;
-    if (!id || !capturedAt || !headphones || !thumbUrl || byId.has(id)) {
-      continue;
-    }
-    byId.set(id, {
-      id,
-      capturedAt,
-      headphones: headphones === "true",
-      humanVerified: false,
-      thumbUrl
-    });
-  }
-
-  return Array.from(byId.values())
-    .sort((left, right) => new Date(right.capturedAt).getTime() - new Date(left.capturedAt).getTime())
-    .slice(0, limit);
-}
-
-type EvalCasesResponse = {
-  cases: { id: string; capturedAt: string; headphones: boolean; correctedFields: string[]; thumbUrl: string }[];
-};
-
-/**
- * Gold labels from the self-hosted server's own eval export. Only cases where a
- * human actually corrected `headphones` are returned, because that is the single
- * field this benchmark scores — grading a model against another model's stored
- * guess would measure agreement, not accuracy.
- */
-async function localRows(baseUrl: string, limit: number): Promise<EvalFrame[]> {
-  const secret = process.env.OWNER_SECRET;
-  if (!secret || secret.trim().length === 0) {
-    throw new Error("Missing OWNER_SECRET. Set it in local env before running the benchmark; never paste it into chat.");
-  }
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/eval-cases?limit=${limit}`, {
-    headers: { Authorization: `Bearer ${secret}` }
-  });
-  if (!response.ok) {
-    throw new Error(`Local eval-cases source failed: ${response.status}`);
-  }
-  const body: EvalCasesResponse = await response.json();
-  return body.cases
-    .filter((entry) => entry.correctedFields.includes("headphones"))
-    .slice(0, limit)
-    .map((entry) => ({
-      id: entry.id,
-      capturedAt: entry.capturedAt,
-      headphones: entry.headphones,
-      humanVerified: true,
-      thumbUrl: entry.thumbUrl
-    }));
-}
-
-async function evalFrames(
-  args: BenchmarkArgs
-): Promise<{ frames: EvalFrame[]; labelSource: "human_verified" | "pseudo_stored" | "public_pseudo_stored" }> {
-  if (args.source === "public") {
-    return { frames: await publicRows(args.publicUrl, args.limit), labelSource: "public_pseudo_stored" };
-  }
-  if (args.source === "local") {
-    return { frames: await localRows(args.baseUrl, args.limit), labelSource: "human_verified" };
-  }
-
-
-  const gold = await postgresRows("gold", args.limit);
-  if (gold.length >= args.minGold) {
-    return { frames: gold, labelSource: "human_verified" };
-  }
-  const pseudo = await postgresRows("pseudo", args.limit);
-  return { frames: pseudo, labelSource: "pseudo_stored" };
-}
-
-async function frameBytes(frame: EvalFrame, publicUrl: string): Promise<Uint8Array | null> {
-  if (frame.thumbUrl) {
-    const response = await fetch(new URL(frame.thumbUrl, publicUrl));
-    return response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
-  }
-  return snapshotThumbnailBytes(frame.id);
-}
-
-async function classify(openai: OpenAI, model: string, jpeg: Uint8Array): Promise<{ headphones: boolean; promptTokens: number | null; completionTokens: number | null }> {
-  const completion = await openai.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: [
+async function ask(model: string, id: string): Promise<Answer | null> {
+  try {
+    const completion = await client.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: [
           { type: "text", text: USER_TEXT },
-          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${Buffer.from(jpeg).toString("base64")}` } }
-        ]
+          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${images.get(id)}` } }
+        ] }
+      ],
+      max_tokens: VISION_MAX_TOKENS,
+      temperature: VISION_TEMPERATURE
+    });
+    const read = parseFocusRead(completion.choices[0]?.message?.content);
+    return { headphones: read.signals.headphones, confident: read.confident };
+  } catch {
+    return null;
+  }
+}
+
+/** Runs `task` over every frame with bounded concurrency, preserving order. */
+async function overFrames<T>(task: (frame: Case) => Promise<T>): Promise<T[]> {
+  const results = new Array<T>(frames.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= frames.length) return;
+        results[index] = await task(frames[index]);
       }
-    ],
-    // Generous cap on purpose: reasoning models (e.g. gpt-5-nano) spend hidden
-    // reasoning tokens before emitting content, and a tight cap made them return
-    // NOTHING — which measures a harness artifact, not the model. Their real
-    // cost still surfaces via the measured completion tokens.
-    max_tokens: 800,
-    temperature: 0
+    })
+  );
+  return results;
+}
+
+function score(predictions: (boolean | null)[]): { recall: number; specificity: number; balanced: number; errors: number } {
+  let tp = 0, fn = 0, tn = 0, fp = 0, errors = 0;
+  predictions.forEach((predicted, index) => {
+    if (predicted === null) { errors++; return; }
+    if (frames[index].headphones) predicted ? tp++ : fn++;
+    else predicted ? fp++ : tn++;
   });
-  const signals = parseSignals(completion.choices[0]?.message?.content);
-  return {
-    headphones: signals.headphones,
-    promptTokens: completion.usage?.prompt_tokens ?? null,
-    completionTokens: completion.usage?.completion_tokens ?? null
-  };
+  const recall = tp + fn === 0 ? 0 : tp / (tp + fn);
+  const specificity = tn + fp === 0 ? 0 : tn / (tn + fp);
+  return { recall, specificity, balanced: (recall + specificity) / 2, errors };
 }
 
-function mean(values: number[]): number | null {
-  return values.length === 0 ? null : values.reduce((total, value) => total + value, 0) / values.length;
-}
+const pct = (value: number) => `${(value * 100).toFixed(1).padStart(5)}%`;
 
-function monthlyCost(meanCostUsd: number | null, callsPerDay: number): number | null {
-  return meanCostUsd === null ? null : meanCostUsd * callsPerDay * 30;
-}
-
-async function benchmarkModel(openai: OpenAI, model: string, frames: EvalFrame[], pricing: ModelPricing | undefined, callsPerDay: number[], publicUrl: string): Promise<ModelResult> {
-  let correct = 0;
-  let errors = 0;
-  const promptTokens: number[] = [];
-  const completionTokens: number[] = [];
-  const costs: number[] = [];
-
-  for (const frame of frames) {
-    const bytes = await frameBytes(frame, publicUrl);
-    if (!bytes) {
-      errors += 1;
-      continue;
-    }
-    try {
-      const result = await classify(openai, model, bytes);
-      if (result.headphones === frame.headphones) {
-        correct += 1;
-      }
-      if (result.promptTokens !== null) {
-        promptTokens.push(result.promptTokens);
-      }
-      if (result.completionTokens !== null) {
-        completionTokens.push(result.completionTokens);
-      }
-      if (pricing && result.promptTokens !== null && result.completionTokens !== null) {
-        costs.push(result.promptTokens * pricing.prompt + result.completionTokens * pricing.completion);
-      }
-    } catch (error) {
-      errors += 1;
-      console.warn(`[benchmark] ${model} failed on ${frame.id}:`, (error as Error).message);
-    }
+if (!chainMode) {
+  for (const model of models) {
+    const answers = await overFrames((frame) => ask(model, frame.id));
+    const result = score(answers.map((answer) => answer?.headphones ?? null));
+    const unsure = answers.filter((answer) => answer && !answer.confident).length;
+    console.log(
+      `${model.padEnd(34)} recall ${pct(result.recall)}  spec ${pct(result.specificity)}  ` +
+      `balanced ${pct(result.balanced)}  unsure ${String(unsure).padStart(3)}  err ${result.errors}`
+    );
   }
-
-  const evaluated = frames.length - errors;
-  const meanCostUsd = mean(costs);
-  return {
-    model,
-    evaluated,
-    correct,
-    accuracy: evaluated === 0 ? null : correct / evaluated,
-    errors,
-    meanPromptTokens: mean(promptTokens),
-    meanCompletionTokens: mean(completionTokens),
-    meanCostUsd,
-    monthly: callsPerDay.map((count) => ({ callsPerDay: count, costUsd: monthlyCost(meanCostUsd, count) }))
-  };
+  process.exit(0);
 }
 
-function noteFor(labelSource: "human_verified" | "pseudo_stored" | "public_pseudo_stored"): string {
-  if (labelSource === "human_verified") {
-    return "Accuracy uses human-corrected snapshots as gold labels.";
+// --chain: what does escalating on "unsure" actually buy?
+const primary = await overFrames((frame) => ask(models[0], frame.id));
+const escalated: (boolean | null)[] = [];
+let escalations = 0;
+let changedAnswer = 0;
+
+for (let index = 0; index < frames.length; index++) {
+  const first = primary[index];
+  if (first && first.confident) { escalated.push(first.headphones); continue; }
+  // Unsure (or failed): walk the rest of the chain exactly as production does.
+  let answer: Answer | null = first;
+  for (const model of models.slice(1)) {
+    escalations++;
+    const next = await ask(model, frames[index].id);
+    if (next) answer = next;
+    if (next?.confident) break;
   }
-  if (labelSource === "public_pseudo_stored") {
-    return "Accuracy is agreement with public stored snapshot labels, not human ground truth; use this as a cost/parse smoke test.";
-  }
-  return "Accuracy uses stored snapshot labels as pseudo-labels because the human-verified set is too small.";
+  if (answer && first && answer.headphones !== first.headphones) changedAnswer++;
+  escalated.push(answer?.headphones ?? null);
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs();
-  const apiKey = requireOpenRouterKey();
-  const [{ frames, labelSource }, pricing] = await Promise.all([
-    evalFrames(args),
-    openRouterPricing(args.models)
-  ]);
-  if (frames.length === 0) {
-    throw new Error("No benchmark frames found. Need human-corrected headphones cases (--source local), human-verified Postgres rows, or public page snapshot data.");
-  }
+const alone = score(primary.map((answer) => answer?.headphones ?? null));
+const withChain = score(escalated);
 
-  const openai = new OpenAI({
-    apiKey,
-    baseURL: OPENROUTER_BASE_URL,
-    defaultHeaders: {
-      "HTTP-Referer": args.publicUrl,
-      "X-Title": "work-live vision benchmark"
-    }
-  });
-  const results: ModelResult[] = [];
-  // Local gold frames are served by the local server, not the public URL.
-  const frameBase = args.source === "local" ? args.baseUrl : args.publicUrl;
-  for (const model of args.models) {
-    results.push(await benchmarkModel(openai, model, frames, pricing.get(model), args.callsPerDay, frameBase));
-  }
-
-  console.log(JSON.stringify({
-    source: args.source,
-    publicUrl: args.source === "public" ? args.publicUrl : null,
-    labelSource,
-    frameCount: frames.length,
-    frameIds: frames.map((frame) => frame.id),
-    models: args.models,
-    callsPerDayScenarios: args.callsPerDay,
-    note: noteFor(labelSource),
-    results
-  }, null, 2));
-}
-
-await main();
+console.log(`first model alone   recall ${pct(alone.recall)}  spec ${pct(alone.specificity)}  balanced ${pct(alone.balanced)}  err ${alone.errors}`);
+console.log(`with escalation     recall ${pct(withChain.recall)}  spec ${pct(withChain.specificity)}  balanced ${pct(withChain.balanced)}  err ${withChain.errors}`);
+console.log(`\nescalation fired on ${primary.filter((a) => a && !a.confident).length}/${frames.length} frames (${escalations} extra calls)`);
+console.log(`it changed the answer ${changedAnswer} times`);
+console.log(`balanced accuracy delta: ${((withChain.balanced - alone.balanced) * 100).toFixed(2)} points`);
+process.exit(0);

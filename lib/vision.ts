@@ -2,8 +2,9 @@ import OpenAI from "openai";
 import sharp from "sharp";
 import { z } from "zod";
 import { getOptionalEnv } from "@/lib/env";
-import { detectPresence } from "@/lib/presence";
+import { detectPresence, presenceMinScore } from "@/lib/presence";
 import type { Signals } from "@/lib/types";
+import { VISION_CREDITS_NOTE, VISION_UNAVAILABLE_NOTE } from "@/lib/vision-notes";
 
 export class VisionAnalysisError extends Error {
   constructor(message: string) {
@@ -23,6 +24,11 @@ const looseNote = z.preprocess((value) => {
 // clamped because the public page still shows it.
 const signalSchema = z.object({
   headphones: z.boolean(),
+  // Self-reported certainty, used ONLY to decide whether to ask a stronger model.
+  // Optional and defaulting to "sure" on purpose: a model that ignores the field
+  // (or returns junk for it) must cost nothing extra rather than escalating every
+  // frame. It is never persisted — only the resulting answer is.
+  confident: z.boolean().optional().default(true),
   note: looseNote,
 });
 const auditSignalSchema = z.object({
@@ -35,17 +41,74 @@ const auditSignalSchema = z.object({
 const DEFAULT_QWEN_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 const DEFAULT_QWEN_VISION_MODEL = "qwen3.6-flash";
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-const DEFAULT_OPENROUTER_VISION_MODEL = "qwen/qwen3.5-flash-02-23";
-const VISION_UNAVAILABLE_NOTE = "Vision unavailable; presence verified locally.";
+// Ordered chain, tried until a model answers CONFIDENTLY. Chosen by benchmark
+// against the owner's own 154 corrected frames plus live reliability probes
+// (2026-07-27). All three sit on INDEPENDENT upstream providers, so one vendor
+// cannot silence vision.
+//
+// Reliability outranks both accuracy and price here, because a failed call is
+// recorded as "no headphones" — an unreliable model does not just cost less
+// information, it writes a false record. Two models were demoted on that basis:
+//   nex-agi/nex-n2-mini      — same 98.9% accuracy, 1/10th the price, but 18% of
+//                              live calls returned 502. Rejected outright.
+//   bytedance-seed/seed-1.6-flash — 98.9% and cheapest of the reliable set, but
+//                              measured 429 rate-limiting under sustained use, so
+//                              it is the backup rather than the primary.
+// amazon/nova-2-lite-v1 leads on 26/26 clean live calls at 98.9% accuracy; the
+// ~$0.40/month it costs over seed is not worth a false record.
+//
+// gemini-2.5-flash is last on purpose: it is the second opinion for frames the
+// cheaper models admit they cannot read, so it is only paid for when it matters.
+const DEFAULT_OPENROUTER_VISION_MODELS = [
+  "amazon/nova-2-lite-v1",
+  "bytedance-seed/seed-1.6-flash",
+  "google/gemini-2.5-flash"
+];
+// Re-exported so existing importers of "@/lib/vision" keep working, while the
+// definitions live in a dependency-free module that /api/status can import
+// without dragging in the detector. See lib/vision-notes.ts.
+export { VISION_CREDITS_NOTE, VISION_UNAVAILABLE_NOTE };
+
+// The exact request settings production sends. Exported so a benchmark measures
+// the SAME call rather than a friendlier one — the OpenAI SDK retries twice by
+// default, which quietly turns a flaky provider into a reliable-looking one and
+// hides the retries from any call counter the harness keeps.
+//
+// maxRetries 0: with multi-provider failover the NEXT model IS the retry, so
+// retrying a dead provider only burns the capture window before the fallback.
+export const VISION_MAX_RETRIES = 0;
+// 220 tokens fits a boolean, a certainty flag, and a <=160-character note with
+// room to spare; anything larger just pays for a model that rambles.
+export const VISION_MAX_TOKENS = 220;
+// Deterministic: the same frame must not score differently on a re-run, or the
+// corrections corpus stops being a stable benchmark.
+export const VISION_TEMPERATURE = 0;
+
+/**
+ * Whether a failed vision call means "the account is out of money" rather than
+ * "the provider hiccuped". Matches the shapes OpenRouter and OpenAI-compatible
+ * gateways use for billing refusals: HTTP 402, an insufficient-credits/quota
+ * message, or a payment-required phrase.
+ */
+export function isCreditsExhausted(message: string): boolean {
+  return /\b402\b|insufficient[ _-]?(credits|quota|balance)|payment required|exceeded.{0,20}(quota|credit)|billing/i.test(message);
+}
 
 // Normal captures use the local person detector for presence first, then ask the
 // VLM only for focus quality. This deliberately avoids letting the VLM hallucinate
 // presence on every ordinary frame.
-const SYSTEM_PROMPT =
+// Exported so the benchmark scores the EXACT prompt production sends. A copy in
+// the harness silently diverged once already, which makes every number it prints
+// a measurement of something the app does not do.
+export const SYSTEM_PROMPT =
   "You analyze a single webcam still for a public work-focus accountability page. " +
   "A person has ALREADY been detected at the desk in this frame, so do NOT judge presence. " +
   "Reply with ONLY a JSON object — no prose, no markdown fences — with exactly these keys: " +
-  "headphones (boolean: the person is wearing over-ear or in-ear headphones), " +
+  "headphones (boolean: the person is wearing over-ear or in-ear headphones — in-ear buds count, " +
+  "and they can be hidden by hair, a hood, or a cap), " +
+  "confident (boolean: false when the frame is too dark, blurry, or occluded for you to be sure " +
+  "about headphones — answering false costs you nothing and sends the frame to a stronger model, " +
+  "so say it rather than guessing), " +
   "note (a short plain sentence describing what you see; max 160 characters).";
 
 // Long-run audits are different: they exist to challenge a status that has stayed
@@ -59,8 +122,6 @@ const AUDIT_SYSTEM_PROMPT =
   "present (boolean), headphones (boolean), note (a short plain sentence explaining the visual evidence; max 160 characters).";
 
 
-// Pull the JSON object out of a model reply, tolerating code fences or stray
-// prose so an occasional non-pure reply still validates instead of 502-ing.
 function extractJsonObject(content: string): string {
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const body = fenced ? fenced[1] : content;
@@ -72,7 +133,17 @@ function extractJsonObject(content: string): string {
   return body.slice(start, end + 1);
 }
 
-export function parseSignals(content: string | null | undefined): Signals {
+/**
+ * A model's answer plus whether it said it was sure.
+ *
+ * Certainty exists only to decide whether to ask a stronger model; it is never
+ * persisted, so an unsure answer that survives escalation is stored exactly like
+ * a confident one.
+ */
+export type VisionRead = { signals: Signals; confident: boolean };
+
+/** Focus-quality answer with the model's self-reported certainty. */
+export function parseFocusRead(content: string | null | undefined): VisionRead {
   if (!content || content.trim().length === 0) {
     throw new VisionAnalysisError("Vision model returned no content");
   }
@@ -93,12 +164,20 @@ export function parseSignals(content: string | null | undefined): Signals {
     );
   }
   return {
-    present: true,
-    headphones: result.data.headphones,
-    eyesOnScreen: false,
-    posture: "unknown",
-    note: result.data.note,
+    signals: {
+      present: true,
+      headphones: result.data.headphones,
+      eyesOnScreen: false,
+      posture: "unknown",
+      note: result.data.note,
+    },
+    confident: result.data.confident,
   };
+}
+
+/** The focus answer alone, for callers that do not act on certainty. */
+export function parseSignals(content: string | null | undefined): Signals {
+  return parseFocusRead(content).signals;
 }
 export function parsePresenceAudit(content: string | null | undefined): Signals {
   if (!content || content.trim().length === 0) {
@@ -186,6 +265,9 @@ type VisionProvider = {
 export type FrameAnalysisResult = {
   signals: Signals;
   visionProvider: VisionProvider["name"] | null;
+  // Which model produced the answer; null when no model was reached (fixture,
+  // unreadable frame, no person, or total outage).
+  visionModel: string | null;
 };
 
 function visionProviderOrder(): VisionProvider["name"][] {
@@ -200,34 +282,35 @@ function visionProviderOrder(): VisionProvider["name"][] {
 function configuredVisionProviders(): VisionProvider[] {
   const qwenKey = getOptionalEnv("DASHSCOPE_API_KEY") || getOptionalEnv("QWEN_API_KEY");
   const openRouterKey = getOptionalEnv("OPENROUTER_API_KEY") || getOptionalEnv("OPENROUTER_KEY");
-  const providers: Partial<Record<VisionProvider["name"], VisionProvider>> = {};
+  const providers: Partial<Record<VisionProvider["name"], VisionProvider[]>> = {};
 
   if (qwenKey) {
-    providers.qwen = {
+    providers.qwen = [{
       name: "qwen",
       apiKey: qwenKey,
       baseURL: getOptionalEnv("WORK_LIVE_QWEN_BASE_URL") || getOptionalEnv("DASHSCOPE_BASE_URL") || DEFAULT_QWEN_BASE_URL,
       model: getOptionalEnv("WORK_LIVE_QWEN_VISION_MODEL") || getOptionalEnv("WORK_LIVE_VISION_MODEL") || DEFAULT_QWEN_VISION_MODEL
-    };
+    }];
   }
 
   if (openRouterKey) {
-    providers.openrouter = {
-      name: "openrouter",
+    const configured = getOptionalEnv("WORK_LIVE_OPENROUTER_VISION_MODEL");
+    const models = (configured ? configured.split(",") : DEFAULT_OPENROUTER_VISION_MODELS)
+      .map((model) => model.trim())
+      .filter(Boolean);
+    providers.openrouter = models.map((model) => ({
+      name: "openrouter" as const,
       apiKey: openRouterKey,
       baseURL: getOptionalEnv("WORK_LIVE_OPENROUTER_BASE_URL") || DEFAULT_OPENROUTER_BASE_URL,
-      model: getOptionalEnv("WORK_LIVE_OPENROUTER_VISION_MODEL") || DEFAULT_OPENROUTER_VISION_MODEL,
+      model,
       headers: {
         "HTTP-Referer": getOptionalEnv("WORK_LIVE_PUBLIC_URL") || "https://tally-focus.vercel.app",
         "X-Title": "work-live"
       }
-    };
+    }));
   }
 
-  return visionProviderOrder().flatMap((name) => {
-    const provider = providers[name];
-    return provider ? [provider] : [];
-  });
+  return visionProviderOrder().flatMap((name) => providers[name] ?? []);
 }
 
 // Direct OpenAI-compatible vision APIs. Qwen/DashScope remains first for existing
@@ -239,13 +322,13 @@ async function analyzeViaProvider(
   jpeg: Uint8Array,
   systemPrompt = SYSTEM_PROMPT,
   userText = "Return the focus-signals JSON for this frame.",
-  parse = parseSignals,
-): Promise<Signals> {
+  parse: (content: string | null | undefined) => VisionRead = parseFocusRead,
+): Promise<VisionRead> {
   // maxRetries: 0 — with multi-provider failover the NEXT provider is the retry.
   // Retrying an exhausted/429 provider here just burns the serverless invocation
   // (and caused the outage where every capture stalled on a dead Qwen) before we
   // ever try the fallback. Fail fast; the loop below moves to the next provider.
-  const openai = new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseURL, defaultHeaders: provider.headers, maxRetries: 0 });
+  const openai = new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseURL, defaultHeaders: provider.headers, maxRetries: VISION_MAX_RETRIES });
 
   let completion;
   try {
@@ -269,8 +352,8 @@ async function analyzeViaProvider(
           ],
         },
       ],
-      max_tokens: 220,
-      temperature: 0,
+      max_tokens: VISION_MAX_TOKENS,
+      temperature: VISION_TEMPERATURE,
     });
   } catch (error) {
     throw new VisionAnalysisError(
@@ -284,13 +367,17 @@ async function analyzeViaProvider(
 type VisionProviderResult = {
   signals: Signals;
   provider: VisionProvider["name"];
+  // The model that actually answered. Recorded on the snapshot so accuracy can be
+  // attributed later: a model other than the first in the chain means this frame
+  // fell back, either because the first was unsure or because it errored.
+  model: string;
 };
 
 async function analyzeWithVisionProviders(
   jpeg: Uint8Array,
   systemPrompt = SYSTEM_PROMPT,
   userText = "Return the focus-signals JSON for this frame.",
-  parse = parseSignals,
+  parse: (content: string | null | undefined) => VisionRead = parseFocusRead,
 ): Promise<VisionProviderResult> {
   const providers = configuredVisionProviders();
   if (providers.length === 0) {
@@ -298,16 +385,30 @@ async function analyzeWithVisionProviders(
   }
 
   const failures: string[] = [];
+  // An unsure answer is kept but not returned yet: the list is ordered cheap
+  // first, so the next model is a second opinion worth paying for on a hard
+  // frame. Overwritten each time so that if EVERY model hesitates we keep the
+  // last (strongest) one's answer rather than the cheapest guess.
+  let unsure: VisionProviderResult | null = null;
   for (const provider of providers) {
     try {
-      const signals = await analyzeViaProvider(provider, jpeg, systemPrompt, userText, parse);
-      return { signals, provider: provider.name };
+      const read = await analyzeViaProvider(provider, jpeg, systemPrompt, userText, parse);
+      if (read.confident) {
+        return { signals: read.signals, provider: provider.name, model: provider.model };
+      }
+      unsure = { signals: read.signals, provider: provider.name, model: provider.model };
+      console.warn(`[work-live] Vision model ${provider.model} was unsure; escalating to the next model`);
     } catch (error) {
       const message = error instanceof VisionAnalysisError ? error.message : (error as Error).message;
       failures.push(message);
       console.warn("[work-live] Vision provider failed:", message);
     }
   }
+
+  // An unsure answer is only a usable last resort when every model answered.
+  // If any escalation attempt failed, returning the first model's guess would
+  // hide a partial outage and make `visionHealthFrom` report a healthy read.
+  if (unsure && failures.length === 0) return unsure;
 
   throw new VisionAnalysisError(`Vision providers failed: ${failures.join("; ")}`);
 }
@@ -406,7 +507,10 @@ async function analyzePresenceAudit(small: Uint8Array): Promise<VisionProviderRe
     small,
     AUDIT_SYSTEM_PROMPT,
     "Return the audited presence JSON for this frame.",
-    parsePresenceAudit
+    // The audit has no escalation step: its prompt already instructs the model to
+    // answer present=false when uncertain, so hesitation is the ANSWER here rather
+    // than a reason to ask someone else.
+    (content) => ({ signals: parsePresenceAudit(content), confident: true })
   );
 }
 
@@ -440,38 +544,55 @@ function awaySignals(note: string): Signals {
 export async function analyzeFrameWithProvider(jpeg: Uint8Array): Promise<FrameAnalysisResult> {
   const fixture = fixtureSignals();
   if (fixture) {
-    return { signals: fixture, visionProvider: null };
+    return { signals: fixture, visionProvider: null, visionModel: null };
   }
 
-  const unreadable = await unreadableFrameReason(jpeg);
-  if (unreadable) {
-    return { signals: awaySignals(unreadable), visionProvider: null };
-  }
-
+  // A dim or colour-cast frame is no longer discarded unseen. The local detector
+  // still gets to look; it just has to clear the stricter dim bar. Under the
+  // owner's purple LED lighting an EMPTY chair silhouette scores ~0.4 while he
+  // actually at the desk scores 0.6+, so the two are separable — whereas throwing
+  // every dim frame away lost real late-night working time.
   const small = await downscaleForVision(jpeg);
+  const unreadable = await unreadableFrameReason(jpeg);
+  const { present, score } = await detectPresence(small);
 
-  const { present } = await detectPresence(small);
-  if (!present) {
-    return { signals: awaySignals("No person detected — turned away or not at the desk."), visionProvider: null };
+  if (!(unreadable ? score >= presenceMinScore("dim") : present)) {
+    return {
+      signals: awaySignals(unreadable ?? "No person detected — turned away or not at the desk."),
+      visionProvider: null,
+      visionModel: null
+    };
   }
 
   try {
     const quality = await analyzeFocusQuality(small);
-    return { signals: { ...quality.signals, present: true }, visionProvider: quality.provider };
+    return { signals: { ...quality.signals, present: true }, visionProvider: quality.provider, visionModel: quality.model };
   } catch (error) {
     if (!(error instanceof VisionAnalysisError)) {
       throw error;
     }
-    console.warn("[work-live] Vision unavailable after local presence; storing conservative fallback:", error.message);
+    const outOfCredits = isCreditsExhausted(error.message);
+    console.warn(
+      outOfCredits
+        ? "[work-live] Vision DOWN — provider credits exhausted; top up to restore headphone/focus reads:"
+        : "[work-live] Vision unavailable after local presence; storing conservative fallback:",
+      error.message
+    );
     return {
       signals: {
         present: true,
+        // headphones stays a boolean so the scoring contract stays strict, but
+        // visionRead marks it as a placeholder rather than an observation. Without
+        // that flag this row is indistinguishable from "a model looked and saw no
+        // headphones", which is how 415 frames came to assert something nobody saw.
         headphones: false,
         eyesOnScreen: false,
         posture: "unknown",
-        note: VISION_UNAVAILABLE_NOTE
+        note: outOfCredits ? VISION_CREDITS_NOTE : VISION_UNAVAILABLE_NOTE,
+        visionRead: "unknown"
       },
-      visionProvider: null
+      visionProvider: null,
+      visionModel: null
     };
   }
 }
@@ -495,13 +616,20 @@ export async function analyzeFrame(jpeg: Uint8Array): Promise<Signals> {
  * before any remote provider call.
  */
 export async function auditFrameWithProvider(jpeg: Uint8Array): Promise<FrameAnalysisResult> {
+  const small = await downscaleForVision(jpeg);
   const unreadable = await unreadableFrameReason(jpeg);
-  if (unreadable) {
-    return { signals: awaySignals(unreadable), visionProvider: null };
+
+  // Only the READABILITY check is short-circuited here, never the presence
+  // question: this audit exists to challenge the local detector, so it must still
+  // reach the VLM on a readable frame even when the detector saw nobody. A dim
+  // frame with a clearly visible person is worth auditing too, hence the strict
+  // detector bar rather than an outright reject.
+  if (unreadable && (await detectPresence(small)).score < presenceMinScore("dim")) {
+    return { signals: awaySignals(unreadable), visionProvider: null, visionModel: null };
   }
 
-  const audited = await analyzePresenceAudit(await downscaleForVision(jpeg));
-  return { signals: audited.signals, visionProvider: audited.provider };
+  const audited = await analyzePresenceAudit(small);
+  return { signals: audited.signals, visionProvider: audited.provider, visionModel: audited.model };
 }
 
 /**
@@ -524,15 +652,15 @@ export async function auditFrame(jpeg: Uint8Array): Promise<Signals> {
  * reason (dark frame, no person) or is empty when present.
  */
 export async function detectPresenceOnly(jpeg: Uint8Array): Promise<{ present: boolean; note: string }> {
-  const unreadable = await unreadableFrameReason(jpeg);
-  if (unreadable) {
-    return { present: false, note: unreadable };
-  }
-
   const small = await downscaleForVision(jpeg);
-  const { present } = await detectPresence(small);
+  const unreadable = await unreadableFrameReason(jpeg);
+  const { present, score } = await detectPresence(small);
+
+  // Same rule as the full capture path: a dim frame is judged by the detector
+  // under a stricter bar rather than being discarded on brightness alone.
+  const clears = unreadable ? score >= presenceMinScore("dim") : present;
   return {
-    present,
-    note: present ? "" : "No person detected — turned away or not at the desk."
+    present: clears,
+    note: clears ? "" : (unreadable ?? "No person detected — turned away or not at the desk.")
   };
 }

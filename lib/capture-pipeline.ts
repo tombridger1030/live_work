@@ -214,6 +214,8 @@ export async function saveFrameSnapshot(capture: CaptureUpload, settings: Settin
   let signals: Signals;
   let score: ScoreResult;
   let visionProvider: SnapshotSaveResult["visionProvider"] = null;
+  // Recorded on the snapshot so a week of corrections can be attributed per model.
+  let visionModel: string | null = null;
   if (liveness.status === "stale") {
     signals = absentSignals(liveness.note ?? "Away — camera liveness check failed.");
     score = scoreFrom(signals);
@@ -222,10 +224,12 @@ export async function saveFrameSnapshot(capture: CaptureUpload, settings: Settin
     if (audited) {
       signals = audited.signals;
       visionProvider = audited.visionProvider;
+      visionModel = audited.visionModel;
     } else {
       const analyzed = await analyzeFrameWithProvider(frame);
       signals = analyzed.signals;
       visionProvider = analyzed.visionProvider;
+      visionModel = analyzed.visionModel;
     }
     score = scoreFrom(signals);
   } else if (plan === "reuse_previous" && previous) {
@@ -250,6 +254,7 @@ export async function saveFrameSnapshot(capture: CaptureUpload, settings: Settin
     const analyzed = await analyzeFrameWithProvider(frame);
     signals = analyzed.signals;
     visionProvider = analyzed.visionProvider;
+    visionModel = analyzed.visionModel;
     score = scoreFrom(signals);
   }
 
@@ -258,6 +263,7 @@ export async function saveFrameSnapshot(capture: CaptureUpload, settings: Settin
     if (audited) {
       signals = audited.signals;
       visionProvider = audited.visionProvider;
+      visionModel = audited.visionModel;
       score = scoreFrom(signals);
     }
   }
@@ -279,7 +285,8 @@ export async function saveFrameSnapshot(capture: CaptureUpload, settings: Settin
       frameSignature: liveness.frameSignature,
       proofSignature: liveness.proofSignature,
       livenessStatus: liveness.status,
-      livenessScore: liveness.score
+      livenessScore: liveness.score,
+      visionModel
     }),
     score,
     liveness,

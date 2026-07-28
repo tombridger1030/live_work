@@ -21,7 +21,7 @@ beforeEach(async () => {
 afterEach(resetStore);
 
 function checkin(day: string, hour: number, avgScore: number, presentPct: number): HourlyCheckin {
-  return { day, hour, avgScore, presentPct, headphonesPct: 0, verdict: "", critical: false };
+  return { day, hour, avgScore, presentPct, headphonesPct: 0, unknownFrames: 0, verdict: "", critical: false };
 }
 
 test("dailyHistory averages each day's hourly check-ins, newest first", async () => {

@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react";
 import dynamic from "next/dynamic";
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Headphones, HeadphoneOff, Star, User, UserX, type LucideIcon } from "lucide-react";
+import { CalendarDays, Check, ChevronLeft, ChevronRight, Headphones, HeadphoneOff, HelpCircle, Star, TriangleAlert, User, UserX, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Calendar } from "@/components/ui/calendar";
@@ -102,9 +102,20 @@ function pctText(value: number): string {
 }
 
 function editableSignalsFor(snapshot: SnapshotRow): EditableSignal[] {
+  // A frame no model examined must not read as "No headphones" — that is the
+  // assertion this whole change exists to stop making. The chip stays clickable so
+  // Tom can supply the truth; it just no longer claims an answer nobody has.
+  const unseen = snapshot.visionRead === "unknown";
   return [
     { field: "present", on: snapshot.present, onLabel: "Present", offLabel: "Away", onIcon: User, offIcon: UserX },
-    { field: "headphones", on: snapshot.headphones, onLabel: "Headphones", offLabel: "No headphones", onIcon: Headphones, offIcon: HeadphoneOff }
+    {
+      field: "headphones",
+      on: snapshot.headphones,
+      onLabel: "Headphones",
+      offLabel: unseen ? "Headphones not checked" : "No headphones",
+      onIcon: Headphones,
+      offIcon: unseen ? HelpCircle : HeadphoneOff
+    }
   ];
 }
 
@@ -360,14 +371,24 @@ export function Dashboard({ data }: { data: DashboardData }) {
 
   const chartData = useMemo(() => {
     const byHour = new Map(data.hourly.map((checkin) => [checkin.hour, checkin]));
-    const rows: Array<{ hour: number; label: string; score: number; critical: boolean }> = [];
+    const rows: Array<{ hour: number; label: string; score: number; critical: boolean; incomplete: boolean }> = [];
     for (let hour = 0; hour < 24; hour += 1) {
       if (isQuietHour(hour)) continue;
       const checkin = byHour.get(hour);
-      rows.push({ hour, label: hourTick(hour), score: checkin?.avgScore ?? 0, critical: checkin?.critical ?? false });
+      rows.push({
+        hour,
+        label: hourTick(hour),
+        score: checkin?.avgScore ?? 0,
+        critical: checkin?.critical ?? false,
+        // Some frames this hour were never examined, so the bar understates it
+        // until Tom supplies the missing answer.
+        incomplete: (checkin?.unknownFrames ?? 0) > 0
+      });
     }
     return rows;
   }, [data.hourly]);
+
+  const incompleteHours = useMemo(() => chartData.filter((row) => row.incomplete).length, [chartData]);
 
   const liveFrameId = data.isToday && !data.settings.paused && !data.statusState.stale && data.latest ? data.latest.id : null;
   const isLive = selected !== null && liveFrameId !== null && selected.id === liveFrameId;
@@ -378,7 +399,18 @@ export function Dashboard({ data }: { data: DashboardData }) {
     activeCheckin?.presentPct ?? (activeFrames.length > 0 ? Math.round((activeFrames.filter((frame) => frame.present).length / activeFrames.length) * 100) : 0);
   const detailHeadphonesPct =
     activeCheckin?.headphonesPct ??
-    (activeFrames.length > 0 ? Math.round((activeFrames.filter((frame) => frame.headphones).length / activeFrames.length) * 100) : 0);
+    (activeFrames.length > 0
+      ? Math.round(
+          (activeFrames.filter((frame) => frame.visionRead !== "unknown" && frame.headphones).length /
+            Math.max(1, activeFrames.filter((frame) => frame.visionRead !== "unknown").length)) *
+            100
+        )
+      : 0);
+  // When nothing in the hour was examined there is no percentage to report, so the
+  // summary must not print "0% headphones" — that is the same false assertion this
+  // whole change exists to remove, just in a different place on the page.
+  const detailHeadphonesUnknown =
+    activeFrames.length > 0 && activeFrames.every((frame) => frame.visionRead === "unknown");
 
   const metrics = tab === "today" ? todayMetrics(data.stats, data.previousStats, data.isToday ? "vs yesterday at this time" : "vs yesterday") : averageMetrics(data.averages.last7, data.averages.previous7);
   // The snapshot as shown: the server row plus any optimistic correction, re-scored
@@ -507,6 +539,29 @@ export function Dashboard({ data }: { data: DashboardData }) {
 
   return (
     <main className="mx-auto max-w-5xl px-5 py-6">
+      {data.vision.status === "ok" ? null : (
+        <div
+          role="status"
+          className="mb-5 flex items-start gap-3 rounded-xl bg-amber-500/10 px-4 py-3 outline outline-1 -outline-offset-1 outline-amber-500/25"
+        >
+          <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-amber-400" />
+          <div className="min-w-0 text-sm leading-5">
+            <p className="font-medium text-amber-200">
+              {data.vision.status === "credits"
+                ? "Headphone and focus checks are off — the AI account has run out of credit."
+                : "Headphone and focus checks are temporarily unavailable."}
+            </p>
+            <p className="mt-0.5 text-amber-200/70">
+              Desk presence is still being recorded
+              {data.vision.since ? ` · unread since ${frameTime(data.vision.since, data.timeZone)}` : ""}
+              {/* Provider-neutral on purpose: OpenRouter is today's provider, but the
+                  app also supports Qwen/DashScope, and naming the wrong account would
+                  send the owner to top up somewhere that is not broken. */}
+              {data.vision.status === "credits" ? " · top up your AI account to turn them back on" : ""}
+            </p>
+          </div>
+        </div>
+      )}
       <header className="mb-6 flex items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-0.5">
           <Button
@@ -734,7 +789,14 @@ export function Dashboard({ data }: { data: DashboardData }) {
                   <span className="pb-0.5 text-sm text-zinc-500">avg</span>
                 </div>
                 <p className="mt-2 text-sm text-zinc-500">
-                  <Num>{String(detailPresentPct)}</Num>% present · <Num>{String(detailHeadphonesPct)}</Num>% headphones
+                  <Num>{String(detailPresentPct)}</Num>% present ·{" "}
+                  {detailHeadphonesUnknown ? (
+                    <span className="text-amber-200/80">headphones not checked</span>
+                  ) : (
+                    <>
+                      <Num>{String(detailHeadphonesPct)}</Num>% headphones
+                    </>
+                  )}
                 </p>
               </div>
             </div>
@@ -900,9 +962,18 @@ export function Dashboard({ data }: { data: DashboardData }) {
           valueFormatter={formatChartValue}
           className="h-56"
           markKey="critical"
+          flagKey="incomplete"
           selectedKey={activeHour !== null ? hourTick(activeHour) : undefined}
           onBarSelect={handleBarSelect}
         />
+        {incompleteHours > 0 ? (
+          <p className="mt-2 text-xs leading-5 text-amber-200/70">
+            <span className="font-semibold text-amber-400">?</span>{" "}
+            {incompleteHours === 1 ? "1 hour is" : `${incompleteHours} hours are`} missing headphone data — nothing
+            examined those frames, so the bar is lower than the hour really was. Open the hour and set headphones to
+            correct it.
+          </p>
+        ) : null}
       </div>
 
     </main>
