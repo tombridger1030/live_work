@@ -1,5 +1,5 @@
 import type { SnapshotRow } from "@/lib/types";
-import { VISION_CREDITS_NOTE, VISION_UNAVAILABLE_NOTE } from "@/lib/vision";
+import { VISION_CREDITS_NOTE, VISION_UNAVAILABLE_NOTE } from "@/lib/vision-notes";
 
 /**
  * Whether the vision model is actually reading frames right now.

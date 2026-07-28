@@ -522,7 +522,10 @@ export function Dashboard({ data }: { data: DashboardData }) {
             <p className="mt-0.5 text-amber-200/70">
               Desk presence is still being recorded
               {data.vision.since ? ` · unread since ${frameTime(data.vision.since, data.timeZone)}` : ""}
-              {data.vision.status === "credits" ? " · add credit to OpenRouter to turn them back on" : ""}
+              {/* Provider-neutral on purpose: OpenRouter is today's provider, but the
+                  app also supports Qwen/DashScope, and naming the wrong account would
+                  send the owner to top up somewhere that is not broken. */}
+              {data.vision.status === "credits" ? " · top up your AI account to turn them back on" : ""}
             </p>
           </div>
         </div>

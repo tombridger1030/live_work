@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getOptionalEnv } from "@/lib/env";
 import { detectPresence, presenceMinScore } from "@/lib/presence";
 import type { Signals } from "@/lib/types";
+import { VISION_CREDITS_NOTE, VISION_UNAVAILABLE_NOTE } from "@/lib/vision-notes";
 
 export class VisionAnalysisError extends Error {
   constructor(message: string) {
@@ -63,14 +64,25 @@ const DEFAULT_OPENROUTER_VISION_MODELS = [
   "bytedance-seed/seed-1.6-flash",
   "google/gemini-2.5-flash"
 ];
-// Notes written when the frame was captured and a person WAS detected locally, but
-// no vision model could read it. Exported because the dashboard classifies vision
-// health by matching them — the strings must have exactly one definition.
-export const VISION_UNAVAILABLE_NOTE = "Vision unavailable; presence verified locally.";
-// Split out from the generic note because the two need different reactions: a
-// provider blip clears itself on the next capture, an empty account never does
-// until somebody tops it up. Only this one is worth interrupting the owner for.
-export const VISION_CREDITS_NOTE = "Vision unavailable — AI provider credits exhausted; presence verified locally.";
+// Re-exported so existing importers of "@/lib/vision" keep working, while the
+// definitions live in a dependency-free module that /api/status can import
+// without dragging in the detector. See lib/vision-notes.ts.
+export { VISION_CREDITS_NOTE, VISION_UNAVAILABLE_NOTE };
+
+// The exact request settings production sends. Exported so a benchmark measures
+// the SAME call rather than a friendlier one — the OpenAI SDK retries twice by
+// default, which quietly turns a flaky provider into a reliable-looking one and
+// hides the retries from any call counter the harness keeps.
+//
+// maxRetries 0: with multi-provider failover the NEXT model IS the retry, so
+// retrying a dead provider only burns the capture window before the fallback.
+export const VISION_MAX_RETRIES = 0;
+// 220 tokens fits a boolean, a certainty flag, and a <=160-character note with
+// room to spare; anything larger just pays for a model that rambles.
+export const VISION_MAX_TOKENS = 220;
+// Deterministic: the same frame must not score differently on a re-run, or the
+// corrections corpus stops being a stable benchmark.
+export const VISION_TEMPERATURE = 0;
 
 /**
  * Whether a failed vision call means "the account is out of money" rather than
@@ -313,7 +325,7 @@ async function analyzeViaProvider(
   // Retrying an exhausted/429 provider here just burns the serverless invocation
   // (and caused the outage where every capture stalled on a dead Qwen) before we
   // ever try the fallback. Fail fast; the loop below moves to the next provider.
-  const openai = new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseURL, defaultHeaders: provider.headers, maxRetries: 0 });
+  const openai = new OpenAI({ apiKey: provider.apiKey, baseURL: provider.baseURL, defaultHeaders: provider.headers, maxRetries: VISION_MAX_RETRIES });
 
   let completion;
   try {
@@ -337,8 +349,8 @@ async function analyzeViaProvider(
           ],
         },
       ],
-      max_tokens: 220,
-      temperature: 0,
+      max_tokens: VISION_MAX_TOKENS,
+      temperature: VISION_TEMPERATURE,
     });
   } catch (error) {
     throw new VisionAnalysisError(

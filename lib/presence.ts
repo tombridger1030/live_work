@@ -181,11 +181,18 @@ export type FrameQuality = "normal" | "dim";
  * and otherwise falls back to its calibrated default. Both bars live here so the
  * numbers, their evidence, and their parsing rule stay in one place — raising
  * either silently would re-lose the frames they were tuned to catch.
+ *
+ * Invariant, ENFORCED rather than merely documented: the dim bar is never below
+ * the normal one. The two variables are independent, so an operator could
+ * otherwise configure a dim threshold that admits frames the normal gate would
+ * reject — turning the empty-chair silhouettes the split exists to exclude
+ * (0.36-0.43 under coloured light) into recorded working time. A too-low dim
+ * override is raised to the normal bar instead of being honoured.
  */
 export function presenceMinScore(quality: FrameQuality = "normal"): number {
-  return quality === "dim"
-    ? envScore("WORK_LIVE_PRESENCE_DIM_MIN_SCORE", DIM_FRAME_MIN_SCORE)
-    : envScore("WORK_LIVE_PRESENCE_MIN_SCORE", DEFAULT_MIN_SCORE);
+  const normal = envScore("WORK_LIVE_PRESENCE_MIN_SCORE", DEFAULT_MIN_SCORE);
+  if (quality !== "dim") return normal;
+  return Math.max(envScore("WORK_LIVE_PRESENCE_DIM_MIN_SCORE", DIM_FRAME_MIN_SCORE), normal);
 }
 
 function envScore(name: string, fallback: number): number {

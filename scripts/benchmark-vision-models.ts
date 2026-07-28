@@ -25,7 +25,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, parseFocusRead } from "@/lib/vision";
+import { SYSTEM_PROMPT, VISION_MAX_RETRIES, VISION_MAX_TOKENS, VISION_TEMPERATURE, parseFocusRead } from "@/lib/vision";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const USER_TEXT = "Return the focus-signals JSON for this frame.";
@@ -68,7 +68,10 @@ console.log(`corpus: ${frames.length} frames (${frames.filter((f) => f.headphone
 const client = new OpenAI({
   apiKey: process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY,
   baseURL: OPENROUTER_BASE_URL,
-  defaultHeaders: { "X-Title": "work-live benchmark" }
+  defaultHeaders: { "X-Title": "work-live benchmark" },
+  // Must match production: the SDK retries twice by default, which would make a
+  // flaky provider look reliable here and hide those calls from the counter below.
+  maxRetries: VISION_MAX_RETRIES
 });
 
 const images = new Map<string, string>();
@@ -87,8 +90,8 @@ async function ask(model: string, id: string): Promise<Answer | null> {
           { type: "image_url", image_url: { url: `data:image/jpeg;base64,${images.get(id)}` } }
         ] }
       ],
-      max_tokens: 800,
-      temperature: 0
+      max_tokens: VISION_MAX_TOKENS,
+      temperature: VISION_TEMPERATURE
     });
     const read = parseFocusRead(completion.choices[0]?.message?.content);
     return { headphones: read.signals.headphones, confident: read.confident };

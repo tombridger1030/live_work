@@ -150,3 +150,33 @@ test("the dim-frame bar is always stricter than the normal one", () => {
     else process.env.WORK_LIVE_PRESENCE_MIN_SCORE = prevNormal;
   }
 });
+
+// The two thresholds are separate env vars, so nothing stopped an operator
+// configuring a dim bar BELOW the normal one — which would admit exactly the
+// empty-chair silhouettes (0.36-0.43 under coloured LED) the split exists to
+// exclude. The invariant is enforced in code now, not just asserted in a test
+// that only ever checked the defaults.
+test("a dim override below the normal bar is raised, never honoured", () => {
+  const prevDim = process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE;
+  const prevNormal = process.env.WORK_LIVE_PRESENCE_MIN_SCORE;
+  try {
+    process.env.WORK_LIVE_PRESENCE_MIN_SCORE = "0.5";
+    process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE = "0.2";
+    expect(presenceMinScore("dim")).toBe(0.5);
+    expect(presenceMinScore("dim")).toBeGreaterThanOrEqual(presenceMinScore("normal"));
+
+    // A genuinely stricter override is still honoured.
+    process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE = "0.9";
+    expect(presenceMinScore("dim")).toBe(0.9);
+
+    // Raising the NORMAL bar past the dim default drags the dim bar with it.
+    delete process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE;
+    process.env.WORK_LIVE_PRESENCE_MIN_SCORE = "0.7";
+    expect(presenceMinScore("dim")).toBe(0.7);
+  } finally {
+    if (prevDim === undefined) delete process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE;
+    else process.env.WORK_LIVE_PRESENCE_DIM_MIN_SCORE = prevDim;
+    if (prevNormal === undefined) delete process.env.WORK_LIVE_PRESENCE_MIN_SCORE;
+    else process.env.WORK_LIVE_PRESENCE_MIN_SCORE = prevNormal;
+  }
+});
