@@ -16,6 +16,10 @@ function signedChange(value: number): string {
   return `${value > 0 ? "+" : ""}${value}`;
 }
 
+function countLabel(value: number | null | undefined, singular: string, plural = `${singular}s`): string {
+  return value === 1 ? singular : plural;
+}
+
 /** Passive, same-origin view. `selectedDay` is an optional YYYY-MM-DD local day
  * for raw counts; pace always describes the latest verified rolling seven days.
  * Refreshes on mount, every minute, and on return/online. Failed reads preserve
@@ -83,13 +87,13 @@ export function CodePulse({ day, selectedDay = day }: { day?: string; selectedDa
       <dl className="mt-3 grid grid-cols-2 divide-x divide-black/5 tabular-nums dark:divide-white/10">
         <div className="pr-4">
           <dt className="text-xs font-medium text-muted-foreground">Today</dt>
-          <dd className="mt-1 text-2xl font-semibold tracking-tight">{commits ?? "—"}<span className="ml-1 text-xs font-normal text-muted-foreground">commits</span></dd>
-          <dd className="text-sm text-muted-foreground">{merges ?? "—"} merged PRs</dd>
+          <dd className="mt-1 text-2xl font-semibold tracking-tight">{commits ?? "—"}<span className="ml-1 text-xs font-normal text-muted-foreground">{countLabel(commits, "commit")}</span></dd>
+          <dd className="text-sm text-muted-foreground">{merges ?? "—"} merged {countLabel(merges, "PR")}</dd>
         </div>
         <div className="pl-4">
           <dt className="text-xs font-medium text-muted-foreground">This week</dt>
-          <dd className="mt-1 text-2xl font-semibold tracking-tight">{week?.commits ?? "—"}<span className="ml-1 text-xs font-normal text-muted-foreground">commits</span></dd>
-          <dd className="text-sm text-muted-foreground">{week?.merges ?? "—"} merged PRs</dd>
+          <dd className="mt-1 text-2xl font-semibold tracking-tight">{week?.commits ?? "—"}<span className="ml-1 text-xs font-normal text-muted-foreground">{countLabel(week?.commits, "commit")}</span></dd>
+          <dd className="text-sm text-muted-foreground">{week?.merges ?? "—"} merged {countLabel(week?.merges, "PR")}</dd>
         </div>
       </dl>
       <p className="mt-3 text-pretty text-xs text-muted-foreground">
