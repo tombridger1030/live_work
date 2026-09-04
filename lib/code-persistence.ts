@@ -1,9 +1,9 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { get, put, BlobPreconditionFailedError } from "@vercel/blob";
 import { z } from "zod";
-import { codeSnapshotSchema, codeVelocity, type CodePulseData, type CodeSnapshot } from "@/lib/code-velocity";
+import { codeSnapshotSchema, codeVelocity, type CodePulseData, type CodeSnapshot, type CodeWeekActivity } from "@/lib/code-velocity";
 import { fetchCodeSnapshot, githubDayWindow } from "@/lib/github";
-import { appTimeZone, isValidDayKey, localDayKey } from "@/lib/time";
+import { appTimeZone, isValidDayKey, localDayKey, weekStartForDay } from "@/lib/time";
 import type { LedgerData } from "@/lib/ledger";
 
 const dailySchema = z.object({ date: z.string().refine(isValidDayKey), commits: z.number().int().nonnegative(), merges: z.number().int().nonnegative(), lastCommitAt: z.string().datetime({ offset: true }).nullable() });
@@ -105,7 +105,30 @@ export async function readCodePulse(store = codeBlobStore(), now = Date.now(), s
   const { state } = await store.read();
   const result = codeVelocity(state.snapshot, now, state.failed);
   if (!isValidDayKey(selectedDay)) throw new Error("Invalid code day");
-  return { ...result, day: archiveDays(state.days, state.snapshot)[selectedDay] ?? null };
+  const days = archiveDays(state.days, state.snapshot);
+  return { ...result, day: days[selectedDay] ?? null, week: codeWeekActivity(days, selectedDay) };
+}
+
+function shiftDay(day: string, amount: number): string {
+  const at = new Date(`${day}T12:00:00Z`);
+  at.setUTCDate(at.getUTCDate() + amount);
+  return at.toISOString().slice(0, 10);
+}
+
+/** Returns a complete week-to-date comparison. Both periods must have an
+ * observed record for every elapsed local day, so missing history never reads
+ * as a zero or a made-up improvement.
+ */
+export function codeWeekActivity(days: Record<string, CodeDayActivity>, through: string): CodeWeekActivity | null {
+  if (!isValidDayKey(through)) throw new Error("Invalid code day");
+  const weekStart = weekStartForDay(through);
+  const span = Array.from({ length: Math.floor((Date.parse(`${through}T12:00:00Z`) - Date.parse(`${weekStart}T12:00:00Z`)) / 86_400_000) + 1 }, (_, index) => shiftDay(weekStart, index));
+  const current = span.map((day) => days[day]);
+  if (current.some((day) => !day)) return null;
+  const prior = span.map((day) => days[shiftDay(day, -7)]);
+  const sum = (items: CodeDayActivity[]) => ({ commits: items.reduce((total, day) => total + day.commits, 0), merges: items.reduce((total, day) => total + day.merges, 0) });
+  const total = sum(current as CodeDayActivity[]);
+  return { weekStart, through, ...total, comparison: prior.some((day) => !day) ? null : sum(prior as CodeDayActivity[]) };
 }
 
 /** One Blob read for Ledger's date range. Returned days REPLACE saved coding

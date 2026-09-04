@@ -32,7 +32,6 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Num } from "@/components/Num";
-import { CodePulse } from "@/components/CodePulse";
 import { RollingNumber } from "@/components/RollingNumber";
 import { useRefreshOnReturn } from "@/lib/use-refresh-on-return";
 import {
@@ -863,7 +862,6 @@ export function Dashboard({
           liveUrl={mirror.liveUrl}
         />
       ) : null}
-      <div className="mb-6"><CodePulse selectedDay={data.viewDay} /></div>
       {data.vision.status === "ok" ? null : (
         <div
           role="status"

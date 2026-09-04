@@ -669,7 +669,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
             liveUrl={mirror.liveUrl}
           />
         ) : null}
-        <CodePulse selectedDay={selectedDayData?.day ?? data.today} />
+        <CodePulse selectedDay={data.today} />
         {summaryWeek ? (
           <section className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.25)] sm:p-5">
             <div className="mb-4 flex items-center justify-between gap-3">

@@ -1,5 +1,4 @@
 import { Dashboard } from "@/components/Dashboard";
-import { CodePulse } from "@/components/CodePulse";
 import { getDashboardData } from "@/lib/dashboard";
 import { isMirrorHost, readMirror } from "@/lib/mirror";
 import Link from "next/link";
@@ -37,7 +36,6 @@ export default async function Home({
     }
     return (
       <main className="mx-auto max-w-5xl px-5 py-10">
-        <div className="mb-6"><CodePulse selectedDay={day && isValidDayKey(day) ? day : undefined} /></div>
         <h1 className="text-xl font-medium">{day && isValidDayKey(day) ? `Capture history for ${day} is unavailable` : "Capture data is temporarily unavailable"}</h1>
         <p className="mt-3 text-sm text-muted-foreground">The deployed calendar keeps 30 days of captured images. Missing dates are never replaced with today's data.</p>
         <div className="mt-5 flex gap-5 text-sm"><Link href="/" className="underline">Today</Link><Link href="/ledger" className="underline">Open Ledger</Link></div>

@@ -12,6 +12,10 @@ export function codePulseAge(iso: string, now = Date.now()): string {
   return `${Math.floor(minutes / 1440)}d ago`;
 }
 
+function signedChange(value: number): string {
+  return `${value > 0 ? "+" : ""}${value}`;
+}
+
 /** Passive, same-origin view. `selectedDay` is an optional YYYY-MM-DD local day
  * for raw counts; pace always describes the latest verified rolling seven days.
  * Refreshes on mount, every minute, and on return/online. Failed reads preserve
@@ -66,21 +70,33 @@ export function CodePulse({ day, selectedDay = day }: { day?: string; selectedDa
   const stale = failed || data?.freshness === "stale";
   const commits = data?.day?.commits;
   const merges = data?.day?.merges;
+  const week = data?.week;
+  const commitChange = week?.comparison ? week.commits - week.comparison.commits : null;
+  const mergeChange = week?.comparison ? week.merges - week.comparison.merges : null;
   const status = stale ? "Update delayed" : data?.asOf ? "Synced from GitHub" : failed || data?.status === "unavailable" ? "Awaiting GitHub sync" : "Checking GitHub…";
   return (
-    <section aria-label="Code Pulse" className="rounded-2xl bg-card p-4 text-card-foreground shadow-sm ring-1 ring-black/5 dark:ring-white/10">
+    <section aria-label="Code activity" className="rounded-2xl bg-card p-4 text-card-foreground shadow-sm ring-1 ring-black/5 dark:ring-white/10">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-balance text-base font-semibold tracking-tight">Code Pulse</h2>
+        <h2 className="text-balance text-base font-semibold tracking-tight">Code activity</h2>
         <p role="status" className={`text-xs ${stale ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}>{status}</p>
       </div>
-      <dl className="mt-2 grid grid-cols-3 gap-4 tabular-nums">
-        <div><dd className="text-2xl font-semibold tracking-tight">{commits ?? "—"}</dd><dt className="text-xs text-muted-foreground">Commits</dt></div>
-        <div><dd className="text-2xl font-semibold tracking-tight">{merges ?? "—"}</dd><dt className="text-xs text-muted-foreground">Merged PRs</dt></div>
-        <div title="Latest 7 elapsed days of commits + merged PRs, divided by the prior 28-day weekly average, capped at 100.">
-          <dd className="text-2xl font-semibold tracking-tight">{data?.score ?? "—"}<span className="ml-1 text-xs font-normal text-muted-foreground">/ 100</span></dd>
-          <dt className="text-xs text-muted-foreground">{data?.status === "building-baseline" ? "Building baseline" : "7-day pace"}</dt>
+      <dl className="mt-3 grid grid-cols-2 divide-x divide-black/5 tabular-nums dark:divide-white/10">
+        <div className="pr-4">
+          <dt className="text-xs font-medium text-muted-foreground">Today</dt>
+          <dd className="mt-1 text-2xl font-semibold tracking-tight">{commits ?? "—"}<span className="ml-1 text-xs font-normal text-muted-foreground">commits</span></dd>
+          <dd className="text-sm text-muted-foreground">{merges ?? "—"} merged PRs</dd>
+        </div>
+        <div className="pl-4">
+          <dt className="text-xs font-medium text-muted-foreground">This week</dt>
+          <dd className="mt-1 text-2xl font-semibold tracking-tight">{week?.commits ?? "—"}<span className="ml-1 text-xs font-normal text-muted-foreground">commits</span></dd>
+          <dd className="text-sm text-muted-foreground">{week?.merges ?? "—"} merged PRs</dd>
         </div>
       </dl>
+      <p className="mt-3 text-pretty text-xs text-muted-foreground">
+        {commitChange === null || mergeChange === null
+          ? "Week-over-week comparison will appear once both periods are verified."
+          : <>vs same point last week: <span className={commitChange >= 0 ? "text-emerald-700 dark:text-emerald-400" : "text-rose-700 dark:text-rose-400"}>{signedChange(commitChange)} commits</span> · <span className={mergeChange >= 0 ? "text-emerald-700 dark:text-emerald-400" : "text-rose-700 dark:text-rose-400"}>{signedChange(mergeChange)} merged PRs</span></>}
+      </p>
       <p className="mt-2 text-pretty text-xs text-muted-foreground">Default branch · {selectedDay ?? "today"} · authored activity</p>
       <p className="mt-1 flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span>Last commit {data?.lastCommitAt ? <time className="font-medium text-card-foreground" dateTime={data.lastCommitAt} title={new Date(data.lastCommitAt).toLocaleString()}>{codePulseAge(data.lastCommitAt, now)}</time> : data?.asOf ? "none found" : "not yet verified"}</span>

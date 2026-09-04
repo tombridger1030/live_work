@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash, createHmac } from "node:crypto";
 import { codeVelocity, type CodeSnapshot } from "@/lib/code-velocity";
-import { applyCodeDaysToLedger, logCodeFailure, queueCodeDelivery, readCodeDays, readCodePulse, receiveCodeWebhook, reconcileCodePulse, validCodeSignature, type CodeStore } from "@/lib/code-persistence";
+import { applyCodeDaysToLedger, codeWeekActivity, logCodeFailure, queueCodeDelivery, readCodeDays, readCodePulse, receiveCodeWebhook, reconcileCodePulse, validCodeSignature, type CodeStore } from "@/lib/code-persistence";
 import { assembleLedger } from "@/lib/ledger";
 import { codePulseAge } from "@/components/CodePulse";
 import { fetchCodeSnapshot } from "@/lib/github";
@@ -80,6 +80,23 @@ describe("Code Pulse pace and coverage", () => {
   test("failed/stale reads retain exact last verified counts", () => {
     expect(codeVelocity(snapshot(), NOW + 3 * 60 * 60_000)).toMatchObject({ commits: 1, score: 50, freshness: "stale" });
     expect(codeVelocity(snapshot(), NOW, true).freshness).toBe("stale");
+  });
+
+  test("week-to-date compares the same elapsed days and refuses incomplete history", () => {
+    const days = {
+      "2026-08-24": { date: "2026-08-24", commits: 2, merges: 1, lastCommitAt: null },
+      "2026-08-25": { date: "2026-08-25", commits: 3, merges: 0, lastCommitAt: null },
+      "2026-08-26": { date: "2026-08-26", commits: 4, merges: 1, lastCommitAt: null },
+      "2026-08-31": { date: "2026-08-31", commits: 5, merges: 1, lastCommitAt: null },
+      "2026-09-01": { date: "2026-09-01", commits: 6, merges: 2, lastCommitAt: null },
+      "2026-09-02": { date: "2026-09-02", commits: 7, merges: 1, lastCommitAt: null },
+    };
+    expect(codeWeekActivity(days, "2026-09-02")).toEqual({
+      weekStart: "2026-08-31", through: "2026-09-02", commits: 18, merges: 4,
+      comparison: { commits: 9, merges: 2 },
+    });
+    const { "2026-09-01": _missing, ...incomplete } = days;
+    expect(codeWeekActivity(incomplete, "2026-09-02")).toBeNull();
   });
 });
 

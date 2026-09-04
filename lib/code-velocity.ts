@@ -32,6 +32,19 @@ export type CodePulseData = {
   baselineWeeklyPace: number | null;
   asOf: string | null;
   day?: { date: string; commits: number; merges: number; lastCommitAt: string | null } | null;
+  week?: CodeWeekActivity | null;
+};
+
+/** A verified Monday-to-selected-day total and the matching elapsed portion of
+ * the prior week. A null comparison means the retained observation history is
+ * not complete enough to call a change an improvement.
+ */
+export type CodeWeekActivity = {
+  weekStart: string;
+  through: string;
+  commits: number;
+  merges: number;
+  comparison: { commits: number; merges: number } | null;
 };
 
 /**
