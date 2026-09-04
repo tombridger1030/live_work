@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { createOwnerSessionToken, isOwnerSecret, isOwnerSessionAuthorized, OWNER_SESSION_COOKIE, OWNER_SESSION_MAX_AGE_SECONDS } from "@/lib/auth";
+import {
+  createOwnerSessionToken,
+  isOwnerMutationAuthorized,
+  isOwnerSecret,
+  isOwnerSessionAuthorized,
+  OWNER_SESSION_COOKIE,
+  OWNER_SESSION_MAX_AGE_SECONDS,
+} from "@/lib/auth";
 import { checkOwnerSessionRateLimit } from "@/lib/rate-limit";
 import { validateWeeklyGoal } from "@/lib/weekly-goal";
 
@@ -32,4 +39,38 @@ test("owner session login throttles repeated attempts per client", async () => {
   const blocked = await checkOwnerSessionRateLimit(key, now);
   expect(blocked.allowed).toBe(false);
   expect(blocked.retryAfterSeconds).toBeGreaterThan(0);
+});
+
+test("same-origin Tailscale Serve identity authorizes owner mutations", () => {
+  const authorized = new Request("https://tally.test/api/ledger", {
+    method: "POST",
+    headers: {
+      origin: "https://tally.test",
+      "tailscale-user-login": "owner@example.test",
+    },
+  });
+  const crossOrigin = new Request("https://tally.test/api/ledger", {
+    method: "POST",
+    headers: {
+      origin: "https://attacker.test",
+      "tailscale-user-login": "owner@example.test",
+    },
+  });
+
+  expect(isOwnerMutationAuthorized(authorized, null)).toBe(true);
+  expect(isOwnerMutationAuthorized(crossOrigin, null)).toBe(false);
+});
+
+test("Tailscale proxy origin is reconstructed from trusted forwarded headers", () => {
+  const request = new Request("http://tally.tailnet.test/api/ledger", {
+    method: "POST",
+    headers: {
+      origin: "https://tally.tailnet.test",
+      "tailscale-user-login": "owner@example.test",
+      "x-forwarded-host": "tally.tailnet.test",
+      "x-forwarded-proto": "https",
+    },
+  });
+
+  expect(isOwnerMutationAuthorized(request, null)).toBe(true);
 });

@@ -1,3 +1,7 @@
 {
-  "buildCommand": "next build"
+  "buildCommand": "next build",
+  "crons": [
+    { "path": "/mirror-api/github/reconcile", "schedule": "*/5 * * * *" },
+    { "path": "/mirror-api/archive/retention", "schedule": "0 10 * * *" }
+  ]
 }

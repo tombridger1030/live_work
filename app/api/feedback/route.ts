@@ -1,17 +1,19 @@
-import { isOwnerSessionAuthorized, jsonError } from "@/lib/auth";
+import { isOwnerMutationAuthorized, jsonError } from "@/lib/auth";
 import { revalidateCaptures } from "@/lib/cache";
+import { saveDashboardSignalOverride } from "@/lib/dashboard-overrides";
 import { applySignalCorrection } from "@/lib/feedback";
 import { buildHourlyCheckin } from "@/lib/rollup";
 import { getOptionalEnv } from "@/lib/env";
+import { isMirrorHost, readMirror } from "@/lib/mirror";
 import { checkFeedbackRateLimit } from "@/lib/rate-limit";
 import { scoreFrom } from "@/lib/score";
 import { correctSnapshot, getSnapshotById, recordFeedback, saveHourlyCheckin, snapshotsForDay } from "@/lib/store";
-import { localDayKey, localHour } from "@/lib/time";
+import { isValidDayKey, localDayKey, localHour } from "@/lib/time";
 import type { Signals } from "@/lib/types";
 
 export const runtime = "nodejs";
 
-type Body = { snapshotId?: unknown; field?: unknown; value?: unknown };
+type Body = { snapshotId?: unknown; field?: unknown; value?: unknown; day?: unknown };
 
 /**
  * Signal correction. Flips one model signal on a snapshot to the human-supplied
@@ -24,11 +26,11 @@ type Body = { snapshotId?: unknown; field?: unknown; value?: unknown };
  * write here let anyone scrape a snapshot id from the page and rewrite the
  * public accountability record — and poison the `human_verified` rows that the
  * corrections eval and the vision-model benchmark treat as ground truth.
- * Auth: the signed owner-session cookie (same boundary as ledger mutations),
- * which the dashboard already sends on this same-origin request.
+ * Auth: verified Tailscale Serve identity on the private live app, with the
+ * signed owner-session cookie as a fallback. Both require a same-origin request.
  */
 export async function POST(request: Request): Promise<Response> {
-  if (!isOwnerSessionAuthorized(request, getOptionalEnv("OWNER_SECRET"))) {
+  if (!isOwnerMutationAuthorized(request, getOptionalEnv("OWNER_SECRET"))) {
     return jsonError("Unauthorized", 401);
   }
 
@@ -49,6 +51,49 @@ export async function POST(request: Request): Promise<Response> {
   const { snapshotId, field, value } = body;
   if (typeof snapshotId !== "string" || typeof field !== "string") {
     return jsonError("snapshotId and field are required", 400);
+  }
+
+  if (isMirrorHost()) {
+    if (body.day !== undefined && (typeof body.day !== "string" || !isValidDayKey(body.day))) {
+      return jsonError("day must be YYYY-MM-DD", 400);
+    }
+    const mirror = await readMirror(body.day as string | undefined);
+    const mirrorSnapshot = mirror
+      ? [
+          mirror.data.latest,
+          ...Object.values(mirror.data.hourlyFrames).flat(),
+        ].find((candidate) => candidate?.id === snapshotId)
+      : null;
+    if (!mirrorSnapshot) {
+      return jsonError("Snapshot not found", 404);
+    }
+
+    const current: Signals = {
+      present: mirrorSnapshot.present,
+      headphones: mirrorSnapshot.headphones,
+      eyesOnScreen: mirrorSnapshot.eyesOnScreen,
+      posture: mirrorSnapshot.posture,
+      note: mirrorSnapshot.note,
+    };
+    let signals: Signals;
+    try {
+      signals = applySignalCorrection(current, field, value);
+    } catch (error) {
+      return jsonError((error as Error).message, 400);
+    }
+
+    await saveDashboardSignalOverride(snapshotId, {
+      present: signals.present,
+      headphones: signals.headphones,
+    });
+    const score = scoreFrom(signals);
+    revalidateCaptures();
+    return Response.json({
+      id: snapshotId,
+      score: score.score,
+      status: score.status,
+      signals,
+    });
   }
 
   const snapshot = await getSnapshotById(snapshotId);

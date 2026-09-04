@@ -45,6 +45,7 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
   const [saveMessage, setSaveMessage] = useState("");
   const [secretDraft, setSecretDraft] = useState("");
   const [authState, setAuthState] = useState<"idle" | "saving" | "error">("idle");
+  const [authMessage, setAuthMessage] = useState("");
 
   const selectedWeek = weeks.find((week) => week.weekStart === selectedWeekStart) ?? weeks[weeks.length - 1] ?? null;
   const selectedWeekKey = selectedWeek?.weekStart ?? null;
@@ -96,17 +97,24 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
   async function handleAuthenticate() {
     if (!secretDraft) {
       setAuthState("error");
+      setAuthMessage("Enter the Vercel Production owner secret.");
       return;
     }
     setAuthState("saving");
+    setAuthMessage("");
     try {
       await onAuthenticate(secretDraft);
       setSecretDraft("");
       setAuthState("idle");
       setSaveState("idle");
       setSaveMessage("Editing unlocked. Save the goals again.");
-    } catch {
+    } catch (error) {
       setAuthState("error");
+      setAuthMessage(
+        error instanceof Error && error.message === "AUTH_RATE_LIMITED"
+          ? "Too many attempts. Wait a few minutes, then try again."
+          : "Vercel Production did not accept that secret. Your local .env.local may contain a different OWNER_SECRET.",
+      );
     }
   }
 
@@ -199,7 +207,7 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
               {authState === "saving" ? "Unlocking…" : "Unlock editing"}
             </Button>
           </div>
-          {authState === "error" ? <p className="mt-2 text-xs text-rose-300" role="alert">That secret was not accepted.</p> : null}
+          {authState === "error" ? <p className="mt-2 text-xs text-rose-300" role="alert">{authMessage}</p> : null}
         </div>
       ) : null}
     </section>

@@ -180,7 +180,11 @@ test("ledger route distinguishes malformed JSON from mutation failures", async (
     process.env.POSTGRES_URL = "mock-postgres";
     process.env.OWNER_SECRET = secret;
     const cookie = `${OWNER_SESSION_COOKIE}=${createOwnerSessionToken(secret)}`;
-    const headers = { cookie, "content-type": "application/json" };
+    const headers = {
+      cookie,
+      "content-type": "application/json",
+      origin: "https://example.test"
+    };
 
     const malformed = await ledgerPost(
       new Request("https://example.test/api/ledger", {

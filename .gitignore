@@ -15,3 +15,7 @@ skills-lock.json
 # never part of the shipped project; curated media lives in docs/screenshots.
 tasks/
 .env.local.*
+.env*
+
+# Playwright MCP working directory (screenshots, snapshots)
+.playwright-mcp/

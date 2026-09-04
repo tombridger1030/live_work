@@ -26,8 +26,20 @@ function baseCheckin(): HourlyCheckin {
   return { day, hour, avgScore: 70, presentPct: 100, headphonesPct: 50, unknownFrames: 0, verdict: "At desk", critical: false };
 }
 
-function postCritical(body: unknown): Promise<Response> {
-  return POST(new Request("http://test.local/api/critical", { method: "POST", body: JSON.stringify(body) }));
+function postCritical(body: unknown, authorized = true): Promise<Response> {
+  return POST(
+    new Request("http://test.local/api/critical", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "http://test.local",
+        ...(authorized
+          ? { "tailscale-user-login": "owner@example.test" }
+          : {}),
+      },
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 test("setCriticalHour marks an existing hour and rollups preserve the human flag", async () => {
@@ -49,6 +61,12 @@ test("critical route validates input before writing", async () => {
   const response = await postCritical({ day: "2026-6-20", hour, critical: true });
 
   expect(response.status).toBe(400);
+});
+
+test("critical route rejects an unauthenticated write", async () => {
+  const response = await postCritical({ day, hour, critical: true }, false);
+
+  expect(response.status).toBe(401);
 });
 
 test("critical route marks an existing hour", async () => {

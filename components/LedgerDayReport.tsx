@@ -1,10 +1,10 @@
 "use client";
 
 import { NumberField } from "@heroui/react";
-import { Check, Minus, Plus, RotateCcw, Sparkles } from "lucide-react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { Minus, Plus, RotateCcw } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
 import { Num } from "@/components/Num";
-import { appQuick, appSpring, motionTransition, pressSpring } from "@/components/MotionPrimitives";
+import { appSpring, motionTransition } from "@/components/MotionPrimitives";
 import type { LedgerDay } from "@/lib/ledger";
 import { progressState, statusTone } from "@/lib/ledger-ui";
 import { cn } from "@/lib/utils";
@@ -25,10 +25,6 @@ export type LedgerDayReportProps = {
   onMeetingsChange: (value: number) => void;
   onMeetingsRetry: () => void;
   meetingsState: SaveState;
-  featureDone: boolean;
-  onFeatureDoneChange: (value: boolean) => void;
-  onFeatureRetry: () => void;
-  featureState: SaveState;
   dailyReachoutTarget: number;
   dailyHoursTarget: number;
 };
@@ -80,14 +76,14 @@ function CountField({
           <NumberField.Group className="flex h-10 items-center rounded-full border border-white/[0.08] bg-black/20 px-1">
             <NumberField.DecrementButton
               aria-label={`Decrease ${ariaLabel}`}
-              className="inline-flex size-8 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
+              className="inline-flex size-10 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
             >
               <Minus className="size-4" />
             </NumberField.DecrementButton>
             <NumberField.Input className="h-10 w-12 bg-transparent text-center text-base font-semibold text-zinc-50 outline-none" />
             <NumberField.IncrementButton
               aria-label={`Increase ${ariaLabel}`}
-              className="inline-flex size-8 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
+              className="inline-flex size-10 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
             >
               <Plus className="size-4" />
             </NumberField.IncrementButton>
@@ -97,7 +93,7 @@ function CountField({
       <div className="mt-2 flex min-h-4 items-center gap-2 text-[11px] text-zinc-500" aria-live="polite">
         <span>{saveMessage(saveState, "")}</span>
         {saveState === "error" ? (
-          <button type="button" onClick={onRetry} className="inline-flex items-center gap-1 text-zinc-200 transition-colors hover:text-white">
+          <button type="button" onClick={onRetry} className="inline-flex min-h-10 items-center gap-1 px-2 text-zinc-200 transition-colors hover:text-white active:scale-[0.96]">
             <RotateCcw className="size-3" />
             Retry
           </button>
@@ -123,10 +119,6 @@ export function LedgerDayReport({
   onMeetingsChange,
   onMeetingsRetry,
   meetingsState,
-  featureDone,
-  onFeatureDoneChange,
-  onFeatureRetry,
-  featureState,
   dailyReachoutTarget,
   dailyHoursTarget
 }: LedgerDayReportProps) {
@@ -135,7 +127,6 @@ export function LedgerDayReport({
   const hoursWidth = `${Math.min(100, (day.hours / dailyHoursTarget) * 100)}%`;
   const reachoutState = progressState(reachouts, dailyReachoutTarget);
   const hoursState = progressState(day.hours, dailyHoursTarget);
-  const featureText = featureDone ? "Feature shipped" : "Not shipped yet";
 
   return (
     <div className="space-y-3">
@@ -161,14 +152,14 @@ export function LedgerDayReport({
             <NumberField.Group className="flex h-10 items-center rounded-full border border-white/[0.08] bg-black/20 px-1">
               <NumberField.DecrementButton
                 aria-label="Decrease reachouts"
-                className="inline-flex size-8 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
+                className="inline-flex size-10 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
               >
                 <Minus className="size-4" />
               </NumberField.DecrementButton>
               <NumberField.Input className="h-10 w-12 bg-transparent text-center text-base font-semibold text-zinc-50 outline-none" />
               <NumberField.IncrementButton
                 aria-label="Increase reachouts"
-                className="inline-flex size-8 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
+                className="inline-flex size-10 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
               >
                 <Plus className="size-4" />
               </NumberField.IncrementButton>
@@ -181,7 +172,7 @@ export function LedgerDayReport({
               key={step}
               type="button"
               onClick={() => onReachoutsChange(reachouts + step)}
-              className="inline-flex h-8 flex-1 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.03] text-xs font-medium text-zinc-300 transition-colors hover:border-white/[0.14] hover:text-zinc-100 active:scale-[0.96]"
+              className="inline-flex h-10 flex-1 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.03] text-xs font-medium text-zinc-300 transition-colors hover:border-white/[0.14] hover:text-zinc-100 active:scale-[0.96]"
             >
               +{step}
             </button>
@@ -198,7 +189,7 @@ export function LedgerDayReport({
         <div className="mt-2 flex min-h-4 items-center gap-2 text-[11px] text-zinc-500" aria-live="polite">
           <span>{saveMessage(reachoutsState, `Target ${Math.round(dailyReachoutTarget)}`)}</span>
           {reachoutsState === "error" ? (
-            <button type="button" onClick={onReachoutsRetry} className="inline-flex items-center gap-1 text-zinc-200 transition-colors hover:text-white">
+            <button type="button" onClick={onReachoutsRetry} className="inline-flex min-h-10 items-center gap-1 px-2 text-zinc-200 transition-colors hover:text-white active:scale-[0.96]">
               <RotateCcw className="size-3" />
               Retry
             </button>
@@ -247,68 +238,6 @@ export function LedgerDayReport({
         </div>
       </section>
 
-      <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-500">Feature day</p>
-            <p className="mt-1 text-xs text-zinc-500">Shipped something end-to-end?</p>
-          </div>
-          <motion.button
-            type="button"
-            aria-pressed={featureDone}
-            onClick={() => onFeatureDoneChange(!featureDone)}
-            whileTap={reduceMotion ? undefined : { scale: 0.96 }}
-            transition={motionTransition(reduceMotion, pressSpring)}
-            className={cn(
-              "relative inline-flex h-10 min-w-[140px] items-center justify-center overflow-hidden rounded-full border px-4 text-sm font-medium transition-colors",
-              featureDone
-                ? "border-emerald-300/30 bg-emerald-400/12 text-emerald-100"
-                : "border-white/[0.08] bg-black/20 text-zinc-300 hover:border-white/[0.14] hover:text-zinc-100"
-            )}
-          >
-            <span className="relative z-10 inline-flex items-center gap-2">
-              <AnimatePresence initial={false} mode="popLayout">
-                {featureDone ? (
-                  <motion.span
-                    key="feature-done"
-                    initial={reduceMotion ? false : { opacity: 0, scale: 0.25, rotate: -90, filter: "blur(4px)" }}
-                    animate={{ opacity: 1, scale: 1, rotate: 0, filter: "blur(0px)" }}
-                    exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.25, rotate: 90, filter: "blur(4px)" }}
-                    transition={motionTransition(reduceMotion, appSpring)}
-                    className="inline-flex items-center gap-2"
-                  >
-                    <Sparkles className="size-4" aria-hidden />
-                    {featureText}
-                  </motion.span>
-                ) : (
-                  <motion.span
-                    key="feature-pending"
-                    initial={reduceMotion ? false : { opacity: 0, scale: 0.96 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96 }}
-                    transition={motionTransition(reduceMotion, appQuick)}
-                    className="inline-flex items-center gap-2"
-                  >
-                    <span className="size-2 rounded-full bg-zinc-500" aria-hidden />
-                    {featureText}
-                  </motion.span>
-                )}
-              </AnimatePresence>
-            </span>
-          </motion.button>
-        </div>
-        {featureState !== "idle" ? (
-          <div className="mt-2 flex min-h-4 items-center gap-2 text-[11px] text-zinc-500" aria-live="polite">
-            <span>{saveMessage(featureState, "")}</span>
-            {featureState === "error" ? (
-              <button type="button" onClick={onFeatureRetry} className="inline-flex items-center gap-1 text-zinc-200 transition-colors hover:text-white">
-                <RotateCcw className="size-3" />
-                Retry
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </section>
     </div>
   );
 }

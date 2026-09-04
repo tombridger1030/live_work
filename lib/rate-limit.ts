@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from "node:crypto";
+import { list, put } from "@vercel/blob";
 import { getOptionalEnv } from "@/lib/env";
 import { sql } from "@/lib/sql";
 
@@ -67,6 +69,7 @@ const OWNER_SESSION_WINDOW_MS = 15 * 60 * 1000;
 const OWNER_SESSION_LIMIT = 5;
 const ownerSessionBuckets = new Map<string, Bucket>();
 let ownerSessionSchemaReady = false;
+const OWNER_SESSION_BLOB_PREFIX = "mirror/owner-session-attempts";
 
 export class RateLimitUnavailableError extends Error {
   constructor() {
@@ -101,6 +104,35 @@ function checkLocalOwnerSessionRateLimit(key: string, now: number): RateLimitRes
   return { allowed: true };
 }
 
+function ownerAttemptPrefix(key: string, windowStart: number): string {
+  const keyHash = createHash("sha256").update(key).digest("hex").slice(0, 32);
+  return `${OWNER_SESSION_BLOB_PREFIX}/${windowStart}/${keyHash}/`;
+}
+
+/**
+ * Uses one private, uniquely named Blob per attempt so concurrent Vercel
+ * instances do not perform a racy read-modify-write on one shared counter.
+ * Old windows are naturally ignored; the bounded owner traffic makes the
+ * resulting private objects small and avoids a second cleanup database.
+ */
+async function checkBlobOwnerSessionRateLimit(key: string, now: number): Promise<RateLimitResult> {
+  const windowStart = now - (now % OWNER_SESSION_WINDOW_MS);
+  const prefix = ownerAttemptPrefix(key, windowStart);
+  const result = await list({ prefix, limit: OWNER_SESSION_LIMIT + 1 });
+  if (result.hasMore || result.blobs.length >= OWNER_SESSION_LIMIT) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.ceil((windowStart + OWNER_SESSION_WINDOW_MS - now) / 1000),
+    };
+  }
+  await put(`${prefix}${randomUUID()}.json`, "{}", {
+    access: "private",
+    addRandomSuffix: false,
+    contentType: "application/json",
+  });
+  return { allowed: true };
+}
+
 /**
  * Checks the owner-session attempt budget.
  *
@@ -110,8 +142,8 @@ function checkLocalOwnerSessionRateLimit(key: string, now: number): RateLimitRes
  * memory space, so the in-process limiter genuinely bounds attempts there.
  *
  * Failure semantics: throws RateLimitUnavailableError only on serverless without
- * shared storage. Self-host used to hit that path too (NODE_ENV=production with
- * no Postgres), which locked the owner out of their own ledger with a 503.
+ * either Postgres or the private Blob store. A single self-hosted process uses
+ * memory when no shared store is configured.
  */
 export async function checkOwnerSessionRateLimit(key: string, now = Date.now()): Promise<RateLimitResult> {
   if (!hasPostgresConfig()) {
@@ -119,6 +151,9 @@ export async function checkOwnerSessionRateLimit(key: string, now = Date.now()):
     // in-memory counter cannot bound attempts across instances and failing
     // closed is the honest choice. A single self-hosted process is not that.
     if (getOptionalEnv("VERCEL")) {
+      if (getOptionalEnv("BLOB_READ_WRITE_TOKEN")) {
+        return checkBlobOwnerSessionRateLimit(key, now);
+      }
       throw new RateLimitUnavailableError();
     }
     return checkLocalOwnerSessionRateLimit(key, now);

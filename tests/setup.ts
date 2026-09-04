@@ -20,3 +20,10 @@ delete process.env.POSTGRES_URL;
 delete process.env.POSTGRES_PRISMA_URL;
 delete process.env.POSTGRES_URL_NON_POOLING;
 delete process.env.POSTGRES_HOST;
+delete process.env.BLOB_READ_WRITE_TOKEN;
+
+// Ledger reads may synchronize GitHub when repo + author are configured. Tests
+// must never use the developer's Keychain credential or mutate real activity.
+delete process.env.GITHUB_TOKEN;
+delete process.env.GITHUB_REPO;
+delete process.env.GITHUB_AUTHOR;

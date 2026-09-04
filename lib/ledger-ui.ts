@@ -36,10 +36,19 @@ export function statusTone(state: ProgressState): string {
   }
 }
 
+/**
+ * Formats the Daily Trend's unique `YYYY-MM-DD` axis category as a compact day
+ * number. The chart must keep the full date as its coordinate key; using this
+ * displayed value as the key makes Jul 4 and Aug 4 resolve to the same point.
+ */
+export function ledgerChartDayTick(day: string): string {
+  return String(Number(day.slice(-2)));
+}
+
 export function ledgerDayAriaLabel(day: LedgerDay): string {
   if (day.state === "future") {
     return `${day.weekdayLabel} ${day.label}, future day`;
   }
 
-  return `${day.weekdayLabel} ${day.label}: ${day.dailyValue} points, ${day.reachouts} reachouts, ${day.hours.toFixed(1)} hours, ${day.featureDone ? "feature shipped" : "no feature shipped"}`;
+  return `${day.weekdayLabel} ${day.label}: ${day.dailyValue} activity points, ${day.reachouts} reachouts, ${day.hours.toFixed(1)} hours`;
 }

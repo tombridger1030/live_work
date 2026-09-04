@@ -1,5 +1,11 @@
-import { isOwnerSessionAuthorized, jsonError } from "@/lib/auth";
+import { isOwnerMutationAuthorized, jsonError } from "@/lib/auth";
+import { revalidateCaptures } from "@/lib/cache";
 import { getLedgerData } from "@/lib/ledger-server";
+import {
+  saveLedgerDayOverride,
+  saveLedgerWeekOverride,
+} from "@/lib/ledger-overrides";
+import { isMirrorHost, readLatestMirror } from "@/lib/mirror";
 import { setLedgerEntry, setWeeklyGoal } from "@/lib/store";
 import { getOptionalEnv } from "@/lib/env";
 import { validateWeeklyGoal } from "@/lib/weekly-goal";
@@ -9,12 +15,25 @@ import { isValidDayKey, localDayKey, weekStartForDay } from "@/lib/time";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  if (isMirrorHost()) {
+    const snapshot = await readLatestMirror();
+    if (snapshot?.ledger) {
+      return Response.json(snapshot.ledger);
+    }
+    return jsonError("Ledger mirror is not available", 503);
+  }
   const data = await getLedgerData(new Date());
   return Response.json(data);
 }
 
+/**
+ * Applies one owner-authenticated ledger edit and refreshes both live reads and
+ * the always-on mirror. Tailscale Serve identity is the normal browser path;
+ * the signed owner cookie remains a fallback. Inputs are runtime-validated and
+ * goal edits cannot be combined with day edits.
+ */
 export async function POST(request: Request) {
-  if (!isOwnerSessionAuthorized(request, getOptionalEnv("OWNER_SECRET"))) {
+  if (!isOwnerMutationAuthorized(request, getOptionalEnv("OWNER_SECRET"))) {
     return jsonError("Unauthorized", 401);
   }
 
@@ -41,11 +60,25 @@ export async function POST(request: Request) {
       if (body.day !== undefined || !validation.ok || typeof weekStart !== "string" || weekStart > currentMonday) {
         return Response.json({ error: !validation.ok ? validation.error : "weekStart must be a displayed Monday week" }, { status: 400 });
       }
-      const displayed = (await getLedgerData(new Date())).weeks.some((week) => week.weekStart === weekStart);
+      const displayedLedger = isMirrorHost()
+        ? (await readLatestMirror())?.ledger
+        : await getLedgerData(new Date());
+      const displayed = displayedLedger?.weeks.some((week) => week.weekStart === weekStart) ?? false;
       if (!displayed) {
         return Response.json({ error: "weekStart must be a displayed Monday week" }, { status: 400 });
       }
+      if (isMirrorHost()) {
+        await saveLedgerWeekOverride(weekStart, {
+          reachouts: weeklyReachouts as number,
+          hours: weeklyHours as number,
+        });
+        revalidateCaptures();
+        return Response.json({
+          goal: { weekStart, reachouts: weeklyReachouts, hours: weeklyHours },
+        });
+      }
       const goal = await setWeeklyGoal(weekStart, weeklyReachouts as number, weeklyHours as number);
+      revalidateCaptures();
       return Response.json({ goal });
     }
 
@@ -104,7 +137,14 @@ export async function POST(request: Request) {
       return Response.json({ error: "nothing to update" }, { status: 400 });
     }
 
+    if (isMirrorHost()) {
+      await saveLedgerDayOverride(day, fields);
+      revalidateCaptures();
+      return Response.json({ entry: { day, ...fields } });
+    }
+
     const entry = await setLedgerEntry(day, fields);
+    revalidateCaptures();
     return Response.json({ entry });
   } catch (error) {
     console.error("[ledger] mutation failed", error);

@@ -11,6 +11,10 @@
 # contain the vision + secret vars and WORK_LIVE_DATA_DIR, and must NOT contain
 # POSTGRES_*/WORK_LIVE_POSTGRES_URL (their absence selects the local JSON store).
 #
+# Binds to loopback deliberately. Tailscale Serve strips spoofed identity headers
+# and injects the authenticated tailnet user before proxying here; exposing this
+# port on the LAN would let a direct caller forge that trusted header.
+#
 # Assumes a prior production build (`bun run build`). Update flow: pull code ->
 # `bun run build` -> `launchctl kickstart -k gui/$(id -u)/com.tombridger.tally-web`.
 set -euo pipefail
@@ -20,4 +24,4 @@ BUN="/Users/tombridger/.bun/bin/bun"
 PORT="${WORK_LIVE_PORT:-3100}"
 
 cd "$REPO"
-exec "$BUN" run start -- -p "$PORT"
+exec "$BUN" run start -- -H 127.0.0.1 -p "$PORT"

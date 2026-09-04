@@ -11,10 +11,20 @@ const TEST_SECRET = "feedback-auth-test-secret";
 
 // A syntactically valid id that will never exist, so the authorized case stops at
 // the snapshot lookup and writes nothing.
-function correctionRequest(cookie?: string): Request {
+function correctionRequest(
+  cookie?: string,
+  tailscaleLogin?: string,
+): Request {
   return new Request("https://example.test/api/feedback", {
     method: "POST",
-    headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+    headers: {
+      "content-type": "application/json",
+      origin: "https://example.test",
+      ...(cookie ? { cookie } : {}),
+      ...(tailscaleLogin
+        ? { "tailscale-user-login": tailscaleLogin }
+        : {}),
+    },
     body: JSON.stringify({
       snapshotId: "00000000-0000-4000-8000-000000000000",
       field: "present",
@@ -47,11 +57,33 @@ test("feedback rejects a forged owner-session cookie", async () => {
   });
 });
 
+test("Vercel rejects a caller-supplied Tailscale identity", async () => {
+  const previous = process.env.VERCEL;
+  process.env.VERCEL = "1";
+  try {
+    await withOwnerSecret(async () => {
+      expect((await feedbackPost(correctionRequest(undefined, "owner@example.test"))).status).toBe(401);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = previous;
+  }
+});
+
 test("feedback accepts a signed owner session and reaches the snapshot lookup", async () => {
   await withOwnerSecret(async () => {
     const token = createOwnerSessionToken(TEST_SECRET);
     const response = await feedbackPost(correctionRequest(`${OWNER_SESSION_COOKIE}=${token}`));
     // 404 = past the auth gate, stopped at the unknown snapshot (nothing written).
+    expect(response.status).toBe(404);
+  });
+});
+
+test("feedback accepts verified Tailscale Serve identity without a secret", async () => {
+  await withOwnerSecret(async () => {
+    const response = await feedbackPost(
+      correctionRequest(undefined, "owner@example.test"),
+    );
     expect(response.status).toBe(404);
   });
 });

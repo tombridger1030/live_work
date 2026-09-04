@@ -2,8 +2,30 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { DayHistory, FeedbackEntry, HourlyCheckin, LedgerEntry, NudgeMessage, NudgeState, ScoreResult, Settings, Signals, SnapshotRow, WeeklyGoal } from "@/lib/types";
-import { appTimeZone, isQuietHour, isScoringHour, localDayKey, localHour, quietHourEnd, quietHourStart, scoringEndHour, scoringStartHour } from "@/lib/time";
+import type {
+  DayHistory,
+  FeedbackEntry,
+  HourlyCheckin,
+  LedgerEntry,
+  NudgeMessage,
+  NudgeState,
+  ScoreResult,
+  Settings,
+  Signals,
+  SnapshotRow,
+  WeeklyGoal,
+} from "@/lib/types";
+import {
+  appTimeZone,
+  isQuietHour,
+  isScoringHour,
+  localDayKey,
+  localHour,
+  quietHourEnd,
+  quietHourStart,
+  scoringEndHour,
+  scoringStartHour,
+} from "@/lib/time";
 import { RUBRIC_VERSION } from "@/lib/score";
 import { correctableFields, type CorrectableField } from "@/lib/feedback";
 import { validateWeeklyGoal } from "@/lib/weekly-goal";
@@ -25,7 +47,6 @@ type SnapshotCaptureMetadata = {
   visionModel?: string | null;
 };
 
-
 type LocalState = {
   snapshots: SnapshotRow[];
   hourlyCheckins: HourlyCheckin[];
@@ -39,7 +60,8 @@ type LocalState = {
 // Local data root — the JSON store + thumbnails. Override with WORK_LIVE_DATA_DIR
 // (e.g. a mounted external drive) so data lives off the boot/SD volume; defaults
 // to the repo's .work-live for local dev.
-const localRoot = process.env.WORK_LIVE_DATA_DIR || path.join(process.cwd(), ".work-live");
+const localRoot =
+  process.env.WORK_LIVE_DATA_DIR || path.join(process.cwd(), ".work-live");
 const localStoreFile = path.join(localRoot, "store.json");
 const localThumbRoot = path.join(localRoot, "thumbs");
 
@@ -51,7 +73,9 @@ const localThumbRoot = path.join(localRoot, "thumbs");
 // each, thumbnails are separate files on disk), so 200k is roughly a 90MB ceiling.
 // If this store ever needs to outgrow a single rewritten JSON file, the answer is
 // SQLite (bun:sqlite), not a bigger number.
-const localSnapshotLimit = Number(process.env.WORK_LIVE_LOCAL_SNAPSHOT_LIMIT || 200_000);
+const localSnapshotLimit = Number(
+  process.env.WORK_LIVE_LOCAL_SNAPSHOT_LIMIT || 200_000,
+);
 
 let postgresSchemaReady = false;
 
@@ -59,9 +83,9 @@ function hasPostgresConfig(): boolean {
   return Boolean(
     process.env.WORK_LIVE_POSTGRES_URL ||
     process.env.POSTGRES_URL ||
-      process.env.POSTGRES_PRISMA_URL ||
-      process.env.POSTGRES_URL_NON_POOLING ||
-      process.env.POSTGRES_HOST
+    process.env.POSTGRES_PRISMA_URL ||
+    process.env.POSTGRES_URL_NON_POOLING ||
+    process.env.POSTGRES_HOST,
   );
 }
 
@@ -78,8 +102,8 @@ function defaultState(): LocalState {
       blur: false,
       updatedAt: new Date(0).toISOString(),
       snoozeUntil: null,
-      nudgeState: null
-    }
+      nudgeState: null,
+    },
   };
 }
 
@@ -92,14 +116,16 @@ async function readLocalState(): Promise<LocalState> {
     return defaultState();
   }
 
-  const state = JSON.parse(await readFile(localStoreFile, "utf8")) as LocalState;
+  const state = JSON.parse(
+    await readFile(localStoreFile, "utf8"),
+  ) as LocalState;
   return {
     ...state,
     hourlyCheckins: state.hourlyCheckins.map(normalizeCheckin),
     scoreboardEntries: state.scoreboardEntries ?? [],
     weeklyGoals: state.weeklyGoals ?? [],
     nudgeMessages: state.nudgeMessages ?? [],
-    feedback: state.feedback ?? []
+    feedback: state.feedback ?? [],
   };
 }
 
@@ -116,7 +142,9 @@ async function writeLocalState(state: LocalState): Promise<void> {
 // (e.g. a debounced reachouts flush racing a feature toggle) can't lose updates
 // or interleave. Postgres paths don't use this — the database upserts atomically.
 let localStateChain: Promise<unknown> = Promise.resolve();
-async function withLocalState<T>(mutator: (state: LocalState) => T | Promise<T>): Promise<T> {
+async function withLocalState<T>(
+  mutator: (state: LocalState) => T | Promise<T>,
+): Promise<T> {
   const run = localStateChain.then(async () => {
     const state = await readLocalState();
     const result = await mutator(state);
@@ -125,19 +153,32 @@ async function withLocalState<T>(mutator: (state: LocalState) => T | Promise<T>)
   });
   localStateChain = run.then(
     () => undefined,
-    () => undefined
+    () => undefined,
   );
   return run;
 }
 
-async function persistThumbnail(id: string, thumbnail: Uint8Array): Promise<string> {
-  if (process.env.BLOB_READ_WRITE_TOKEN) {
+async function persistThumbnail(
+  id: string,
+  thumbnail: Uint8Array,
+): Promise<string> {
+  // Thumbnails follow the store: Blob is only the right home for them in the
+  // hosted (Postgres) deployment, where there is no durable disk. The presence of
+  // BLOB_READ_WRITE_TOKEN must NOT decide this on its own — the self-hosted Mac
+  // now holds that token to publish the offline mirror (lib/mirror.ts), and
+  // treating it as "upload thumbnails" would silently move every webcam frame off
+  // the expansion drive into public object storage.
+  if (hasPostgresConfig() && process.env.BLOB_READ_WRITE_TOKEN) {
     const { put } = await import("@vercel/blob");
-    const result = await put(`work-live/thumbs/${id}.jpg`, Buffer.from(thumbnail), {
-      access: "public",
-      addRandomSuffix: false,
-      contentType: "image/jpeg"
-    });
+    const result = await put(
+      `work-live/thumbs/${id}.jpg`,
+      Buffer.from(thumbnail),
+      {
+        access: "public",
+        addRandomSuffix: false,
+        contentType: "image/jpeg",
+      },
+    );
     return result.url;
   }
 
@@ -149,7 +190,10 @@ async function persistThumbnail(id: string, thumbnail: Uint8Array): Promise<stri
   }
 
   await mkdir(localThumbRoot, { recursive: true });
-  await writeFile(path.join(localThumbRoot, `${id}.jpg`), Buffer.from(thumbnail));
+  await writeFile(
+    path.join(localThumbRoot, `${id}.jpg`),
+    Buffer.from(thumbnail),
+  );
   return `/api/thumb/${id}`;
 }
 
@@ -275,14 +319,19 @@ function mapSnapshot(row: Record<string, unknown>): SnapshotRow {
     // Cacheable route URL; the bytes are served by /api/thumb from the column.
     thumbUrl: `/api/thumb/${id}`,
     frameHash: row.frame_hash ? String(row.frame_hash) : null,
-    captureSource: row.capture_source ? (String(row.capture_source) as SnapshotRow["captureSource"]) : null,
+    captureSource: row.capture_source
+      ? (String(row.capture_source) as SnapshotRow["captureSource"])
+      : null,
     frameSignature: row.frame_signature ? String(row.frame_signature) : null,
     proofSignature: row.proof_signature ? String(row.proof_signature) : null,
-    livenessStatus: row.liveness_status ? (String(row.liveness_status) as SnapshotRow["livenessStatus"]) : null,
-    livenessScore: row.liveness_score == null ? null : Number(row.liveness_score),
+    livenessStatus: row.liveness_status
+      ? (String(row.liveness_status) as SnapshotRow["livenessStatus"])
+      : null,
+    livenessScore:
+      row.liveness_score == null ? null : Number(row.liveness_score),
     // Absent/NULL means the row predates the column, which is "a model read it".
     visionRead: row.vision_read === "unknown" ? "unknown" : "ok",
-    visionModel: row.vision_model ? String(row.vision_model) : null
+    visionModel: row.vision_model ? String(row.vision_model) : null,
   };
 }
 
@@ -296,7 +345,7 @@ function mapCheckin(row: Record<string, unknown>): HourlyCheckin {
     // Legacy rows predate the column; 0 until the hour is rebuilt from its frames.
     unknownFrames: row.unknown_frames == null ? 0 : Number(row.unknown_frames),
     verdict: String(row.verdict),
-    critical: Boolean(row.critical)
+    critical: Boolean(row.critical),
   };
 }
 
@@ -308,7 +357,7 @@ function mapLedgerEntry(row: Record<string, unknown>): LedgerEntry {
     replies: Number(row.replies),
     meetings: Number(row.meetings),
     commits: Number(row.commits),
-    merges: Number(row.merges)
+    merges: Number(row.merges),
   };
 }
 
@@ -316,7 +365,7 @@ function mapWeeklyGoal(row: Record<string, unknown>): WeeklyGoal {
   return {
     weekStart: String(row.week_start).slice(0, 10),
     reachouts: Number(row.reachouts),
-    hours: Number(row.hours)
+    hours: Number(row.hours),
   };
 }
 
@@ -326,7 +375,7 @@ function mapNudgeMessage(row: Record<string, unknown>): NudgeMessage {
     createdAt: new Date(row.created_at as string | Date).toISOString(),
     direction: row.direction as NudgeMessage["direction"],
     kind: String(row.kind),
-    text: String(row.text)
+    text: String(row.text),
   };
 }
 
@@ -337,7 +386,9 @@ function mapNudgeMessage(row: Record<string, unknown>): NudgeMessage {
  * reduced public artifact, not the raw frame. Postconditions: exactly one
  * snapshot row exists for the returned id and no raw image bytes are stored.
  */
-export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRow> {
+export async function saveSnapshot(
+  input: SaveSnapshotInput,
+): Promise<SnapshotRow> {
   const id = randomUUID();
   const capturedAt = input.capturedAt ?? new Date();
   const stored = await persistThumbnail(id, input.thumbnail);
@@ -355,7 +406,7 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
     proofSignature: input.proofSignature ?? null,
     livenessStatus: input.livenessStatus ?? null,
     livenessScore: input.livenessScore ?? null,
-    visionModel: input.visionModel ?? null
+    visionModel: input.visionModel ?? null,
   };
 
   if (hasPostgresConfig()) {
@@ -379,7 +430,11 @@ export async function saveSnapshot(input: SaveSnapshotInput): Promise<SnapshotRo
 
   const state = await readLocalState();
   state.snapshots = [row, ...state.snapshots]
-    .sort((left, right) => new Date(right.capturedAt).getTime() - new Date(left.capturedAt).getTime())
+    .sort(
+      (left, right) =>
+        new Date(right.capturedAt).getTime() -
+        new Date(left.capturedAt).getTime(),
+    )
     .slice(0, localSnapshotLimit);
   await writeLocalState(state);
   return row;
@@ -411,8 +466,14 @@ export async function snapshotsSince(since: Date): Promise<SnapshotRow[]> {
 
   const state = await readLocalState();
   return state.snapshots
-    .filter((snapshot) => new Date(snapshot.capturedAt).getTime() >= since.getTime())
-    .sort((left, right) => new Date(left.capturedAt).getTime() - new Date(right.capturedAt).getTime());
+    .filter(
+      (snapshot) => new Date(snapshot.capturedAt).getTime() >= since.getTime(),
+    )
+    .sort(
+      (left, right) =>
+        new Date(left.capturedAt).getTime() -
+        new Date(right.capturedAt).getTime(),
+    );
 }
 
 /**
@@ -428,14 +489,19 @@ export async function deleteSnapshotsByIds(ids: string[]): Promise<number> {
 
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
-    const result = await sql.query("DELETE FROM snapshots WHERE id = ANY($1::text[])", [ids]);
+    const result = await sql.query(
+      "DELETE FROM snapshots WHERE id = ANY($1::text[])",
+      [ids],
+    );
     return result.rowCount ?? 0;
   }
 
   const toDelete = new Set(ids);
   const state = await readLocalState();
   const before = state.snapshots.length;
-  state.snapshots = state.snapshots.filter((snapshot) => !toDelete.has(snapshot.id));
+  state.snapshots = state.snapshots.filter(
+    (snapshot) => !toDelete.has(snapshot.id),
+  );
   await writeLocalState(state);
   return before - state.snapshots.length;
 }
@@ -460,13 +526,19 @@ export async function snapshotsForDay(day: string): Promise<SnapshotRow[]> {
       WHERE captured_at >= ${from.toISOString()} AND captured_at < ${to.toISOString()}
       ORDER BY captured_at ASC
     `;
-    return result.rows.map(mapSnapshot).filter((snapshot) => localDayKey(new Date(snapshot.capturedAt)) === day);
+    return result.rows
+      .map(mapSnapshot)
+      .filter((snapshot) => localDayKey(new Date(snapshot.capturedAt)) === day);
   }
 
   const state = await readLocalState();
   return state.snapshots
     .filter((snapshot) => localDayKey(new Date(snapshot.capturedAt)) === day)
-    .sort((left, right) => new Date(left.capturedAt).getTime() - new Date(right.capturedAt).getTime());
+    .sort(
+      (left, right) =>
+        new Date(left.capturedAt).getTime() -
+        new Date(right.capturedAt).getTime(),
+    );
 }
 
 /**
@@ -478,12 +550,15 @@ export async function snapshotsForDay(day: string): Promise<SnapshotRow[]> {
 export async function snapshotThumbnail(id: string): Promise<string | null> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
-    const result = await sql`SELECT thumb_url FROM snapshots WHERE id = ${id} LIMIT 1`;
+    const result =
+      await sql`SELECT thumb_url FROM snapshots WHERE id = ${id} LIMIT 1`;
     return result.rows[0] ? String(result.rows[0].thumb_url) : null;
   }
 
   const state = await readLocalState();
-  return state.snapshots.find((snapshot) => snapshot.id === id)?.thumbUrl ?? null;
+  return (
+    state.snapshots.find((snapshot) => snapshot.id === id)?.thumbUrl ?? null
+  );
 }
 
 /**
@@ -491,14 +566,18 @@ export async function snapshotThumbnail(id: string): Promise<string | null> {
  * fetched from the Blob URL, or read from the local file. The rubric backfill
  * re-runs the vision model on these. Null when the id or bytes are unavailable.
  */
-export async function snapshotThumbnailBytes(id: string): Promise<Uint8Array | null> {
+export async function snapshotThumbnailBytes(
+  id: string,
+): Promise<Uint8Array | null> {
   if (hasPostgresConfig()) {
     const stored = await snapshotThumbnail(id);
     if (!stored) {
       return null;
     }
     if (stored.startsWith("data:")) {
-      return new Uint8Array(Buffer.from(stored.slice(stored.indexOf(",") + 1), "base64"));
+      return new Uint8Array(
+        Buffer.from(stored.slice(stored.indexOf(",") + 1), "base64"),
+      );
     }
     const response = await fetch(stored);
     return response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
@@ -556,12 +635,15 @@ export async function snapshotsNeedingRubric(
 }
 
 /** How many snapshots still predate `version`. Postgres-only; 0 in local dev. */
-export async function countSnapshotsNeedingRubric(version: number): Promise<number> {
+export async function countSnapshotsNeedingRubric(
+  version: number,
+): Promise<number> {
   if (!hasPostgresConfig()) {
     return 0;
   }
   const sql = await sqlClient();
-  const result = await sql`SELECT COUNT(*)::int AS n FROM snapshots WHERE rubric_version IS DISTINCT FROM ${version} AND human_verified IS NOT TRUE`;
+  const result =
+    await sql`SELECT COUNT(*)::int AS n FROM snapshots WHERE rubric_version IS DISTINCT FROM ${version} AND human_verified IS NOT TRUE`;
   return Number(result.rows[0]?.n ?? 0);
 }
 
@@ -584,7 +666,11 @@ export async function getSnapshotById(id: string): Promise<SnapshotRow | null> {
  * score/status and marks the row human_verified so the rubric backfill never
  * overwrites it. Human feedback is permanent ground truth.
  */
-export async function correctSnapshot(id: string, signals: Signals, score: ScoreResult): Promise<void> {
+export async function correctSnapshot(
+  id: string,
+  signals: Signals,
+  score: ScoreResult,
+): Promise<void> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     await sql`
@@ -615,7 +701,12 @@ export async function correctSnapshot(id: string, signals: Signals, score: Score
  * value, and the human's value. The audit trail and the dataset a future
  * learning loop trains on. Postgres-only.
  */
-export async function recordFeedback(input: { snapshotId: string; field: string; oldValue: string; newValue: string }): Promise<void> {
+export async function recordFeedback(input: {
+  snapshotId: string;
+  field: string;
+  oldValue: string;
+  newValue: string;
+}): Promise<void> {
   if (!hasPostgresConfig()) {
     await withLocalState((state) => {
       state.feedback.push({
@@ -677,25 +768,40 @@ function parseModelValue(raw: string): boolean | undefined {
   return undefined;
 }
 
-export async function humanVerifiedCases(limit: number): Promise<CorrectionCase[]> {
+export async function humanVerifiedCases(
+  limit: number,
+): Promise<CorrectionCase[]> {
   if (!hasPostgresConfig()) {
     const state = await readLocalState();
     // Earliest correction per (snapshot, field): that old_value is the model's
     // original answer; later ones are the human changing their own mind.
     const firstBySnapshot = new Map<string, Map<CorrectableField, string>>();
-    const ordered = [...state.feedback].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const ordered = [...state.feedback].sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt),
+    );
     for (const entry of ordered) {
       if (entry.field !== "present" && entry.field !== "headphones") continue;
-      const fields = firstBySnapshot.get(entry.snapshotId) ?? new Map<CorrectableField, string>();
+      const fields =
+        firstBySnapshot.get(entry.snapshotId) ??
+        new Map<CorrectableField, string>();
       if (!fields.has(entry.field)) fields.set(entry.field, entry.oldValue);
       firstBySnapshot.set(entry.snapshotId, fields);
     }
     return state.snapshots
-      .filter((snapshot) => snapshot.humanVerified && firstBySnapshot.has(snapshot.id))
-      .sort((left, right) => new Date(right.capturedAt).getTime() - new Date(left.capturedAt).getTime())
+      .filter(
+        (snapshot) =>
+          snapshot.humanVerified && firstBySnapshot.has(snapshot.id),
+      )
+      .sort(
+        (left, right) =>
+          new Date(right.capturedAt).getTime() -
+          new Date(left.capturedAt).getTime(),
+      )
       .slice(0, limit)
       .map((snapshot) => {
-        const corrections = firstBySnapshot.get(snapshot.id) ?? new Map<CorrectableField, string>();
+        const corrections =
+          firstBySnapshot.get(snapshot.id) ??
+          new Map<CorrectableField, string>();
         const modelSaid: Partial<Record<CorrectableField, boolean>> = {};
         for (const [field, raw] of corrections) {
           const parsed = parseModelValue(raw);
@@ -707,7 +813,7 @@ export async function humanVerifiedCases(limit: number): Promise<CorrectionCase[
           present: snapshot.present,
           headphones: snapshot.headphones,
           correctedFields: Array.from(corrections.keys()),
-          modelSaid
+          modelSaid,
         };
       });
   }
@@ -747,7 +853,7 @@ export async function humanVerifiedCases(limit: number): Promise<CorrectionCase[
       present: Boolean(row.present),
       headphones: Boolean(row.headphones),
       correctedFields,
-      modelSaid
+      modelSaid,
     };
   });
 }
@@ -764,10 +870,14 @@ export async function manualOverrideCaseCount(): Promise<number> {
     const state = await readLocalState();
     const correctedIds = new Set(
       state.feedback
-        .filter((entry) => entry.field === "present" || entry.field === "headphones")
+        .filter(
+          (entry) => entry.field === "present" || entry.field === "headphones",
+        )
         .map((entry) => entry.snapshotId),
     );
-    return state.snapshots.filter((snapshot) => snapshot.humanVerified && !correctedIds.has(snapshot.id)).length;
+    return state.snapshots.filter(
+      (snapshot) => snapshot.humanVerified && !correctedIds.has(snapshot.id),
+    ).length;
   }
   const sql = await sqlClient();
   const result = await sql`
@@ -785,7 +895,12 @@ export async function manualOverrideCaseCount(): Promise<number> {
  * Overwrites one snapshot's analysis with re-scored signals and stamps it with
  * `version` so the backfill never reprocesses it. Postgres-only.
  */
-export async function updateSnapshotAnalysis(id: string, signals: Signals, score: ScoreResult, version: number): Promise<void> {
+export async function updateSnapshotAnalysis(
+  id: string,
+  signals: Signals,
+  score: ScoreResult,
+  version: number,
+): Promise<void> {
   if (!hasPostgresConfig()) {
     return;
   }
@@ -806,7 +921,10 @@ export async function updateSnapshotAnalysis(id: string, signals: Signals, score
 
 /** Stamps the rubric version without changing the reading — for rows whose
  * thumbnail is gone, so the backfill stops retrying them. Postgres-only. */
-export async function stampRubricVersion(id: string, version: number): Promise<void> {
+export async function stampRubricVersion(
+  id: string,
+  version: number,
+): Promise<void> {
   if (!hasPostgresConfig()) {
     return;
   }
@@ -821,12 +939,15 @@ export async function stampRubricVersion(id: string, version: number): Promise<v
 export async function daysWithData(): Promise<string[]> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
-    const result = await sql`SELECT DISTINCT to_char(day, 'YYYY-MM-DD') AS day FROM hourly_checkins ORDER BY day DESC`;
+    const result =
+      await sql`SELECT DISTINCT to_char(day, 'YYYY-MM-DD') AS day FROM hourly_checkins ORDER BY day DESC`;
     return result.rows.map((row) => String(row.day));
   }
 
   const state = await readLocalState();
-  const unique = Array.from(new Set(state.hourlyCheckins.map((checkin) => checkin.day)));
+  const unique = Array.from(
+    new Set(state.hourlyCheckins.map((checkin) => checkin.day)),
+  );
   return unique.sort((left, right) => right.localeCompare(left));
 }
 
@@ -855,7 +976,7 @@ export async function dailyHistory(limit: number): Promise<DayHistory[]> {
       day: String(row.day),
       avgScore: Number(row.avg_score),
       presentPct: Number(row.present_pct),
-      hours: Number(row.hours)
+      hours: Number(row.hours),
     }));
   }
 
@@ -875,9 +996,14 @@ export async function dailyHistory(limit: number): Promise<DayHistory[]> {
   return Array.from(byDay.entries())
     .map(([day, checkins]) => ({
       day,
-      avgScore: Math.round(checkins.reduce((total, c) => total + c.avgScore, 0) / checkins.length),
-      presentPct: Math.round(checkins.reduce((total, c) => total + c.presentPct, 0) / checkins.length),
-      hours: checkins.length
+      avgScore: Math.round(
+        checkins.reduce((total, c) => total + c.avgScore, 0) / checkins.length,
+      ),
+      presentPct: Math.round(
+        checkins.reduce((total, c) => total + c.presentPct, 0) /
+          checkins.length,
+      ),
+      hours: checkins.length,
     }))
     .sort((left, right) => right.day.localeCompare(left.day))
     .slice(0, limit);
@@ -888,7 +1014,9 @@ export async function dailyHistory(limit: number): Promise<DayHistory[]> {
  * newest day first then ascending hour. Powers the rolling 7/30-day averages,
  * which derive per-day headphones %, focus runs, and counts from these rows.
  */
-export async function recentScoringHours(maxDays: number): Promise<HourlyCheckin[]> {
+export async function recentScoringHours(
+  maxDays: number,
+): Promise<HourlyCheckin[]> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
@@ -902,15 +1030,21 @@ export async function recentScoringHours(maxDays: number): Promise<HourlyCheckin
   }
 
   const state = await readLocalState();
-  const scoring = state.hourlyCheckins.filter((checkin) => isScoringHour(checkin.hour));
+  const scoring = state.hourlyCheckins.filter((checkin) =>
+    isScoringHour(checkin.hour),
+  );
   const recentDays = new Set(
     Array.from(new Set(scoring.map((checkin) => checkin.day)))
       .sort((left, right) => right.localeCompare(left))
-      .slice(0, maxDays)
+      .slice(0, maxDays),
   );
   return scoring
     .filter((checkin) => recentDays.has(checkin.day))
-    .sort((left, right) => (left.day === right.day ? left.hour - right.hour : right.day.localeCompare(left.day)));
+    .sort((left, right) =>
+      left.day === right.day
+        ? left.hour - right.hour
+        : right.day.localeCompare(left.day),
+    );
 }
 
 /**
@@ -920,7 +1054,7 @@ export async function recentScoringHours(maxDays: number): Promise<HourlyCheckin
  * app timezone so the buckets match the hourly check-ins. Array = cache-serializable.
  */
 export async function snapshotCountsByDay(
-  maxDays: number
+  maxDays: number,
 ): Promise<{ day: string; snapshots: number; present: number }[]> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
@@ -943,7 +1077,7 @@ export async function snapshotCountsByDay(
     return result.rows.map((row) => ({
       day: String(row.day),
       snapshots: Number(row.snapshots),
-      present: Number(row.present)
+      present: Number(row.present),
     }));
   }
 
@@ -963,12 +1097,18 @@ export async function snapshotCountsByDay(
     counts.set(day, bucket);
   }
   return Array.from(counts.entries())
-    .map(([day, bucket]) => ({ day, snapshots: bucket.snapshots, present: bucket.present }))
+    .map(([day, bucket]) => ({
+      day,
+      snapshots: bucket.snapshots,
+      present: bucket.present,
+    }))
     .sort((left, right) => right.day.localeCompare(left.day))
     .slice(0, maxDays);
 }
 
-export async function saveHourlyCheckin(checkin: HourlyCheckin): Promise<HourlyCheckin> {
+export async function saveHourlyCheckin(
+  checkin: HourlyCheckin,
+): Promise<HourlyCheckin> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
@@ -987,10 +1127,15 @@ export async function saveHourlyCheckin(checkin: HourlyCheckin): Promise<HourlyC
   }
 
   const state = await readLocalState();
-  const existing = state.hourlyCheckins.find((entry) => entry.day === checkin.day && entry.hour === checkin.hour);
-  const saved = { ...checkin, critical: existing?.critical ?? checkin.critical };
+  const existing = state.hourlyCheckins.find(
+    (entry) => entry.day === checkin.day && entry.hour === checkin.hour,
+  );
+  const saved = {
+    ...checkin,
+    critical: existing?.critical ?? checkin.critical,
+  };
   state.hourlyCheckins = state.hourlyCheckins.filter(
-    (entry) => entry.day !== checkin.day || entry.hour !== checkin.hour
+    (entry) => entry.day !== checkin.day || entry.hour !== checkin.hour,
   );
   state.hourlyCheckins.push(saved);
   state.hourlyCheckins.sort((left, right) => left.hour - right.hour);
@@ -1002,7 +1147,11 @@ export async function saveHourlyCheckin(checkin: HourlyCheckin): Promise<HourlyC
  * Marks an existing hourly check-in as critical or not critical without touching
  * the machine-derived rollup fields. Returns null when no captured hour exists.
  */
-export async function setCriticalHour(day: string, hour: number, critical: boolean): Promise<HourlyCheckin | null> {
+export async function setCriticalHour(
+  day: string,
+  hour: number,
+  critical: boolean,
+): Promise<HourlyCheckin | null> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
@@ -1015,7 +1164,9 @@ export async function setCriticalHour(day: string, hour: number, critical: boole
   }
 
   const state = await readLocalState();
-  const index = state.hourlyCheckins.findIndex((checkin) => checkin.day === day && checkin.hour === hour);
+  const index = state.hourlyCheckins.findIndex(
+    (checkin) => checkin.day === day && checkin.hour === hour,
+  );
   if (index < 0) {
     return null;
   }
@@ -1036,7 +1187,9 @@ export async function hourlyForDay(day: string): Promise<HourlyCheckin[]> {
   }
 
   const state = await readLocalState();
-  return state.hourlyCheckins.filter((checkin) => checkin.day === day).sort((left, right) => left.hour - right.hour);
+  return state.hourlyCheckins
+    .filter((checkin) => checkin.day === day)
+    .sort((left, right) => left.hour - right.hour);
 }
 
 /**
@@ -1044,7 +1197,10 @@ export async function hourlyForDay(day: string): Promise<HourlyCheckin[]> {
  * Returns true when a row existed. The caller owns deciding whether the hour
  * should instead be rebuilt from remaining snapshots.
  */
-export async function deleteHourlyCheckin(day: string, hour: number): Promise<boolean> {
+export async function deleteHourlyCheckin(
+  day: string,
+  hour: number,
+): Promise<boolean> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
@@ -1054,7 +1210,9 @@ export async function deleteHourlyCheckin(day: string, hour: number): Promise<bo
 
   const state = await readLocalState();
   const before = state.hourlyCheckins.length;
-  state.hourlyCheckins = state.hourlyCheckins.filter((checkin) => checkin.day !== day || checkin.hour !== hour);
+  state.hourlyCheckins = state.hourlyCheckins.filter(
+    (checkin) => checkin.day !== day || checkin.hour !== hour,
+  );
   await writeLocalState(state);
   return state.hourlyCheckins.length !== before;
 }
@@ -1064,7 +1222,10 @@ export async function deleteHourlyCheckin(day: string, hour: number): Promise<bo
  * their local capture hour, hourly rollups by their stored local hour. The
  * window itself is the single source of truth in lib/time.ts.
  */
-export async function countQuietHourData(): Promise<{ snapshots: number; checkins: number }> {
+export async function countQuietHourData(): Promise<{
+  snapshots: number;
+  checkins: number;
+}> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const tz = appTimeZone();
@@ -1075,13 +1236,18 @@ export async function countQuietHourData(): Promise<{ snapshots: number; checkin
     const chk = await sql`
       SELECT count(*)::int AS n FROM hourly_checkins
       WHERE hour >= ${quietHourStart} AND hour < ${quietHourEnd}`;
-    return { snapshots: Number(snap.rows[0]?.n ?? 0), checkins: Number(chk.rows[0]?.n ?? 0) };
+    return {
+      snapshots: Number(snap.rows[0]?.n ?? 0),
+      checkins: Number(chk.rows[0]?.n ?? 0),
+    };
   }
 
   const state = await readLocalState();
   return {
-    snapshots: state.snapshots.filter((s) => isQuietHour(localHour(new Date(s.capturedAt)))).length,
-    checkins: state.hourlyCheckins.filter((c) => isQuietHour(c.hour)).length
+    snapshots: state.snapshots.filter((s) =>
+      isQuietHour(localHour(new Date(s.capturedAt))),
+    ).length,
+    checkins: state.hourlyCheckins.filter((c) => isQuietHour(c.hour)).length,
   };
 }
 
@@ -1091,7 +1257,10 @@ export async function countQuietHourData(): Promise<{ snapshots: number; checkin
  * a backfill rebuild the quiet-hour rollups from them. Idempotent — re-running
  * deletes nothing once the window is clean.
  */
-export async function purgeQuietHourData(): Promise<{ snapshots: number; checkins: number }> {
+export async function purgeQuietHourData(): Promise<{
+  snapshots: number;
+  checkins: number;
+}> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const tz = appTimeZone();
@@ -1107,28 +1276,44 @@ export async function purgeQuietHourData(): Promise<{ snapshots: number; checkin
   const state = await readLocalState();
   const snapBefore = state.snapshots.length;
   const chkBefore = state.hourlyCheckins.length;
-  state.snapshots = state.snapshots.filter((s) => !isQuietHour(localHour(new Date(s.capturedAt))));
-  state.hourlyCheckins = state.hourlyCheckins.filter((c) => !isQuietHour(c.hour));
+  state.snapshots = state.snapshots.filter(
+    (s) => !isQuietHour(localHour(new Date(s.capturedAt))),
+  );
+  state.hourlyCheckins = state.hourlyCheckins.filter(
+    (c) => !isQuietHour(c.hour),
+  );
   await writeLocalState(state);
-  return { snapshots: snapBefore - state.snapshots.length, checkins: chkBefore - state.hourlyCheckins.length };
+  return {
+    snapshots: snapBefore - state.snapshots.length,
+    checkins: chkBefore - state.hourlyCheckins.length,
+  };
 }
 
 export async function getSettings(): Promise<Settings> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
-    const result = await sql`SELECT paused, blur, updated_at, snooze_until, nudge_state FROM settings WHERE id = 1`;
+    const result =
+      await sql`SELECT paused, blur, updated_at, snooze_until, nudge_state FROM settings WHERE id = 1`;
     const row = result.rows[0];
     return {
       paused: Boolean(row?.paused),
       blur: Boolean(row?.blur),
-      updatedAt: new Date((row?.updated_at as string | Date | undefined) ?? Date.now()).toISOString(),
-      snoozeUntil: row?.snooze_until ? new Date(row.snooze_until as string | Date).toISOString() : null,
-      nudgeState: (row?.nudge_state as NudgeState | null) ?? null
+      updatedAt: new Date(
+        (row?.updated_at as string | Date | undefined) ?? Date.now(),
+      ).toISOString(),
+      snoozeUntil: row?.snooze_until
+        ? new Date(row.snooze_until as string | Date).toISOString()
+        : null,
+      nudgeState: (row?.nudge_state as NudgeState | null) ?? null,
     };
   }
 
   const settings = (await readLocalState()).settings;
-  return { ...settings, snoozeUntil: settings.snoozeUntil ?? null, nudgeState: settings.nudgeState ?? null };
+  return {
+    ...settings,
+    snoozeUntil: settings.snoozeUntil ?? null,
+    nudgeState: settings.nudgeState ?? null,
+  };
 }
 
 /**
@@ -1143,7 +1328,11 @@ export async function setSnoozeUntil(iso: string | null): Promise<void> {
   }
 
   await withLocalState((state) => {
-    state.settings = { ...state.settings, snoozeUntil: iso, updatedAt: new Date().toISOString() };
+    state.settings = {
+      ...state.settings,
+      snoozeUntil: iso,
+      updatedAt: new Date().toISOString(),
+    };
   });
 }
 
@@ -1159,7 +1348,11 @@ export async function setNudgeState(nudgeState: NudgeState): Promise<void> {
   }
 
   await withLocalState((state) => {
-    state.settings = { ...state.settings, nudgeState, updatedAt: new Date().toISOString() };
+    state.settings = {
+      ...state.settings,
+      nudgeState,
+      updatedAt: new Date().toISOString(),
+    };
   });
 }
 
@@ -1167,7 +1360,10 @@ export async function setNudgeState(nudgeState: NudgeState): Promise<void> {
  * Ledger entries (manual reachouts + feature-shipped flag) whose local day
  * falls in [fromDay, toDay] inclusive, ascending. Array = cache-serializable.
  */
-export async function getLedgerEntries(fromDay: string, toDay: string): Promise<LedgerEntry[]> {
+export async function getLedgerEntries(
+  fromDay: string,
+  toDay: string,
+): Promise<LedgerEntry[]> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
@@ -1190,7 +1386,14 @@ export async function getLedgerEntries(fromDay: string, toDay: string): Promise<
  */
 export async function setLedgerEntry(
   day: string,
-  fields: { reachouts?: number; featureDone?: boolean; replies?: number; meetings?: number; commits?: number; merges?: number }
+  fields: {
+    reachouts?: number;
+    featureDone?: boolean;
+    replies?: number;
+    meetings?: number;
+    commits?: number;
+    merges?: number;
+  },
 ): Promise<LedgerEntry> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
@@ -1220,11 +1423,12 @@ export async function setLedgerEntry(
       replies: fields.replies ?? existing?.replies ?? 0,
       meetings: fields.meetings ?? existing?.meetings ?? 0,
       commits: fields.commits ?? existing?.commits ?? 0,
-      merges: fields.merges ?? existing?.merges ?? 0
+      merges: fields.merges ?? existing?.merges ?? 0,
     };
-    state.scoreboardEntries = [...entries.filter((entry) => entry.day !== day), next].sort((left, right) =>
-      left.day.localeCompare(right.day)
-    );
+    state.scoreboardEntries = [
+      ...entries.filter((entry) => entry.day !== day),
+      next,
+    ].sort((left, right) => left.day.localeCompare(right.day));
     return next;
   });
 }
@@ -1234,7 +1438,11 @@ export async function setLedgerEntry(
  * and default timestamp; the local branch stamps both so the shapes match.
  * Append-only — there is no update or delete path (see plan: retention later).
  */
-export async function appendNudgeMessage(m: { direction: "out" | "in"; kind: string; text: string }): Promise<void> {
+export async function appendNudgeMessage(m: {
+  direction: "out" | "in";
+  kind: string;
+  text: string;
+}): Promise<void> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     await sql`
@@ -1252,7 +1460,7 @@ export async function appendNudgeMessage(m: { direction: "out" | "in"; kind: str
       createdAt: new Date().toISOString(),
       direction: m.direction,
       kind: m.kind,
-      text: m.text
+      text: m.text,
     });
     state.nudgeMessages = messages;
   });
@@ -1273,7 +1481,9 @@ export async function getWeeklyGoals(): Promise<WeeklyGoal[]> {
   }
 
   const state = await readLocalState();
-  return (state.weeklyGoals ?? []).slice().sort((left, right) => left.weekStart.localeCompare(right.weekStart));
+  return (state.weeklyGoals ?? [])
+    .slice()
+    .sort((left, right) => left.weekStart.localeCompare(right.weekStart));
 }
 
 /**
@@ -1284,7 +1494,11 @@ export async function getWeeklyGoals(): Promise<WeeklyGoal[]> {
  * >= 1, and `hours` is finite and >= 0.1. Postcondition: a subsequent
  * `getWeeklyGoals` returns the supplied values for exactly that week.
  */
-export async function setWeeklyGoal(weekStart: string, reachouts: number, hours: number): Promise<WeeklyGoal> {
+export async function setWeeklyGoal(
+  weekStart: string,
+  reachouts: number,
+  hours: number,
+): Promise<WeeklyGoal> {
   const validation = validateWeeklyGoal(weekStart, reachouts, hours);
   if (!validation.ok) {
     throw new Error(validation.error);
@@ -1306,9 +1520,10 @@ export async function setWeeklyGoal(weekStart: string, reachouts: number, hours:
 
   return withLocalState((state) => {
     const goals = state.weeklyGoals ?? [];
-    state.weeklyGoals = [...goals.filter((entry) => entry.weekStart !== weekStart), goal].sort((left, right) =>
-      left.weekStart.localeCompare(right.weekStart)
-    );
+    state.weeklyGoals = [
+      ...goals.filter((entry) => entry.weekStart !== weekStart),
+      goal,
+    ].sort((left, right) => left.weekStart.localeCompare(right.weekStart));
     return goal;
   });
 }
@@ -1317,7 +1532,9 @@ export async function setWeeklyGoal(weekStart: string, reachouts: number, hours:
  * The most recent `limit` nudge-conversation lines, newest first. Array =
  * cache-serializable for the ledger page.
  */
-export async function getRecentNudgeMessages(limit: number): Promise<NudgeMessage[]> {
+export async function getRecentNudgeMessages(
+  limit: number,
+): Promise<NudgeMessage[]> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
