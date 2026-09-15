@@ -19,6 +19,7 @@ export type CaptureUpload = {
   frame: Uint8Array;
   proofFrame: Uint8Array | null;
   source: CaptureSource;
+  captureAttemptId: string | null;
 };
 
 
@@ -167,7 +168,8 @@ export async function captureUploadFromRequest(
   return {
     frame,
     proofFrame: await frameBytesFrom(form.get("proofFrame"), "Proof frame"),
-    source: captureSourceFrom(form, fallbackSource)
+    source: captureSourceFrom(form, fallbackSource),
+    captureAttemptId: request.headers.get("x-capture-attempt-id")?.trim() || null,
   };
 }
 
@@ -277,6 +279,7 @@ export async function saveFrameSnapshot(capture: CaptureUpload, settings: Settin
     stored: true,
     snapshot: await saveSnapshot({
       capturedAt,
+      captureAttemptId: capture.captureAttemptId,
       signals,
       score,
       thumbnail,
@@ -312,7 +315,7 @@ async function absentThumbnail(): Promise<Uint8Array> {
  * land on the timeline; once a long away streak is established, AFK backoff
  * suppresses redundant repeats until the next due sample.
  */
-export async function saveAbsentSnapshot(): Promise<SnapshotSaveResult> {
+export async function saveAbsentSnapshot(captureAttemptId: string | null = null): Promise<SnapshotSaveResult> {
   const signals = absentSignals("Away — webcam disconnected, not at setup.");
   const capturedAt = new Date();
   const score = scoreFrom(signals);
@@ -324,6 +327,7 @@ export async function saveAbsentSnapshot(): Promise<SnapshotSaveResult> {
     stored: true,
     snapshot: await saveSnapshot({
       capturedAt,
+      captureAttemptId,
       signals,
       score,
       thumbnail: await absentThumbnail(),

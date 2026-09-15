@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "NEXT_TEST_WASM=1 NEXT_TEST_WASM_DIR=node_modules/@next/swc-wasm-nodejs next dev",
-    "build": "NEXT_TEST_WASM=1 NEXT_TEST_WASM_DIR=node_modules/@next/swc-wasm-nodejs next build",
+    "build": "NEXT_TEST_WASM=1 NEXT_TEST_WASM_DIR=node_modules/@next/swc-wasm-nodejs next build && bun scripts/write-build-id.ts",
     "start": "next start",
     "lint:file": "/Users/tombridger/.bun/bin/bun scripts/lint-file.ts",
     "lint": "/Users/tombridger/.bun/bin/bun scripts/lint-file.ts .",

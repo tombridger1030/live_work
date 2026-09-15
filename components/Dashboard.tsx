@@ -137,6 +137,15 @@ function frameTime(capturedAt: string, timeZone: string): string {
     minute: "2-digit",
   }).format(new Date(capturedAt));
 }
+
+function captureDate(capturedAt: string, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(capturedAt));
+}
 function resolveFramePosition(frameIndex: number, frameCount: number): number {
   return frameCount === 0
     ? -1
@@ -674,6 +683,9 @@ export function Dashboard({
           data.isToday ? "vs yesterday at this time" : "vs yesterday",
         )
       : averageMetrics(data.averages.last7, data.averages.previous7);
+  const lastActualCaptureAt =
+    mirror?.captureHealth.lastImageAt ??
+    (data.latest?.captureSource === "absent" ? null : data.latest?.capturedAt ?? null);
   // The snapshot as shown: the server row plus any optimistic correction, re-scored
   // exactly as the server will (same scoreFrom) so the hero score and status already
   // match before the background write lands.
@@ -859,6 +871,8 @@ export function Dashboard({
       {mirror ? (
         <MirrorNotice
           publishedAt={mirror.publishedAt}
+          captureHealth={mirror.captureHealth}
+          captureFreshness={mirror.captureFreshness}
           liveUrl={mirror.liveUrl}
         />
       ) : null}
@@ -994,11 +1008,12 @@ export function Dashboard({
             ) : (
               <div className="flex h-full flex-col items-center justify-center px-6 text-center">
                 <p className="text-sm font-medium text-zinc-200">
-                  Waiting for the next check-in
+                  {data.isToday ? "No capture today" : "No capture on this day"}
                 </p>
                 <p className="mt-2 max-w-52 text-xs leading-5 text-zinc-500">
-                  The frame keeps its place even when capture is quiet, so the
-                  page never collapses.
+                  {lastActualCaptureAt
+                    ? `Last actual image capture: ${captureDate(lastActualCaptureAt, data.timeZone)}.`
+                    : "No actual image capture has been recorded yet."}
                 </p>
               </div>
             )}

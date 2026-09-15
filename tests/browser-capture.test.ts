@@ -59,7 +59,7 @@ async function saveStoredSnapshot(capturedAt: Date, status: SnapshotRow["status"
 function frameRequest(
   secret: string | null,
   frame: Uint8Array | null,
-  options: { proofFrame?: Uint8Array | null; source?: "agent" | "browser" } = {},
+  options: { proofFrame?: Uint8Array | null; source?: "agent" | "browser"; attemptId?: string } = {},
 ): Request {
   const form = new FormData();
   if (options.source) {
@@ -80,6 +80,9 @@ function frameRequest(
   requestId += 1;
   if (secret) {
     headers.set("Authorization", `Bearer ${secret}`);
+  }
+  if (options.attemptId) {
+    headers.set("X-Capture-Attempt-Id", options.attemptId);
   }
   return new Request("http://localhost/api/browser-capture", {
     method: "POST",
@@ -140,6 +143,26 @@ test("browser capture saves a snapshot through the vision fixture", async () => 
   expect(latest?.score).toBe(100);
   expect(latest?.note).toBe("Fixture check-in saved.");
   expect(checkins).toHaveLength(1);
+});
+
+test("agent retries with one attempt idempotency key without duplicating a snapshot", async () => {
+  process.env.OWNER_SECRET = ownerSecret;
+  process.env.WORK_LIVE_VISION_FIXTURE = fixture;
+  process.env.WORK_LIVE_ALLOW_FIXTURE = "1";
+  const frame = testJpeg();
+  const attemptId = "tick-duplicate-test";
+
+  const first = await POST(frameRequest(ownerSecret, frame, { source: "agent", attemptId }));
+  const second = await POST(frameRequest(ownerSecret, frame, { source: "agent", attemptId }));
+  const firstBody = (await first.json()) as { id: string; stored: boolean };
+  const secondBody = (await second.json()) as { id: string; stored: boolean };
+
+  expect(first.status).toBe(200);
+  expect(second.status).toBe(200);
+  expect(firstBody.stored).toBe(true);
+  expect(secondBody.stored).toBe(true);
+  expect(secondBody.id).toBe(firstBody.id);
+  expect(await snapshotsSince(new Date(Date.now() - 60_000))).toHaveLength(1);
 });
 
 test("agent capture rejects identical liveness proof before vision can mark present", async () => {

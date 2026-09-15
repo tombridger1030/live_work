@@ -3,9 +3,11 @@ import {
   captureCadenceLookbackMinutes,
 } from "@/lib/capture-cadence";
 import { MIRROR_ORIGINS } from "@/lib/self-hosted-origin";
-import { getSettings, latestSnapshot, snapshotsSince } from "@/lib/store";
+import { readCaptureStoreStatus } from "@/lib/store";
 import { isQuietNow } from "@/lib/time";
 import { visionHealthFrom } from "@/lib/vision-health";
+import { captureFreshnessFor, mergeCaptureHealthWithLatest, readCaptureHealth } from "@/lib/capture-health";
+import { runtimeBuildId } from "@/lib/runtime";
 
 export const runtime = "nodejs";
 
@@ -41,18 +43,22 @@ export async function GET(request: Request): Promise<Response> {
   const lookbackStart = new Date(
     now.getTime() - captureCadenceLookbackMinutes * 60_000,
   );
-  const [settings, latest, recentSnapshots] = await Promise.all([
-    getSettings(),
-    latestSnapshot(),
-    snapshotsSince(lookbackStart),
+  const [{ settings, latest, recentSnapshots }, health] = await Promise.all([
+    readCaptureStoreStatus(lookbackStart),
+    readCaptureHealth(),
   ]);
   const quiet = isQuietNow(now);
   const capture = captureCadenceFor(latest, recentSnapshots, now);
+  const captureHealth = mergeCaptureHealthWithLatest(health, latest);
+  const freshness = captureFreshnessFor(captureHealth, settings, now);
   return Response.json(
     {
+      buildId: runtimeBuildId(),
       paused: settings.paused,
       quiet,
       latestId: latest?.id ?? null,
+      captureHealth,
+      captureFreshness: freshness,
       // Surfaced here as well as on the page so the capture agent and any external
       // monitor can see a vision outage without scraping HTML.
       vision: visionHealthFrom(recentSnapshots, now),

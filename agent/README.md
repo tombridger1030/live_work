@@ -9,11 +9,18 @@ the public filmstrip does not fill with redundant AFK snapshots.
 each :00/:05/... wall-clock minute, and once at load). Each tick:
 
 1. asks `/api/status` whether capture is paused or inside quiet hours — if so it
-   exits before the camera is opened;
+   exits before the camera is opened. Requests have a 15-second deadline and one
+   retry for transient failures;
 2. otherwise grabs one frame from the configured camera with `imagesnap`;
-3. posts the frame to `/api/browser-capture`, which stores any return-to-desk
-   frame immediately and suppresses redundant away rows once AFK backoff kicks
-   in, then rolls the current hour when a row was stored.
+3. posts the frame to `/api/browser-capture` with one idempotency key for the
+   whole tick. The server stores any return-to-desk frame immediately and
+   suppresses redundant away rows once AFK backoff kicks in, then rolls the
+   current hour when a row was stored.
+
+Every successful image and every classified failure updates the small durable
+`capture-health.json` record beside the local store. A camera-unavailable
+fallback records an attempted tick, but never claims that a real image was
+captured.
 
 Two macOS details shape the layout, and both are load-bearing:
 
@@ -67,8 +74,8 @@ up.
    must match a name in `imagesnap -l`. Set `IMAGESNAP_BIN` if Homebrew installs
    `imagesnap` somewhere other than `/opt/homebrew/bin/imagesnap`.
 
-3. Install and start the launch agent (copies the runtime out of `~/Desktop`,
-   loads the job, and runs one tick):
+3. Install and start the launch agent plus the web-service watchdog (copies the
+   runtime out of `~/Desktop`, loads both jobs, and runs one tick):
 
    ```sh
    ./agent/install.sh
@@ -76,6 +83,12 @@ up.
 
    Re-run `./agent/install.sh` after editing `capture.ts` or `run-capture.sh` so
    the installed copy under `~/.config/work-live/` stays in sync.
+
+The web server exposes `GET /healthz` on loopback. It reports the running build
+identity, storage readiness, last attempt, last real image, and classified
+failure. The watchdog checks it every five minutes and restarts the server when
+it is unhealthy or serving a build older than the checkout. `run-web.sh` builds
+on a missing or stale build identity before starting Next.
 
 ## Verify and inspect
 
@@ -92,6 +105,11 @@ cat /tmp/work-live-agent.out.log /tmp/work-live-agent.err.log
 launchctl print gui/$(id -u)/com.tombridger.work-live | grep -E 'runs|last exit'
 launchctl kickstart -k gui/$(id -u)/com.tombridger.work-live
 ```
+
+The deployed `/mirror-api/status` endpoint reports capture freshness separately
+from mirror publication freshness. The dashboard shows a stale-capture warning
+when the last real image is old, even if another Ledger or code-activity change
+republished the mirror recently.
 
 The launch check cadence is the `StartCalendarInterval` array in
 `agent/com.tombridger.work-live.plist` — one entry per 5-minute wall-clock mark.

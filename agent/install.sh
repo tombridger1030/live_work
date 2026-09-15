@@ -10,13 +10,16 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HOME/.config/work-live"
 LABEL="com.tombridger.work-live"
+WATCHDOG_LABEL="com.tombridger.tally-web-watchdog"
 UID_="$(id -u)"
 
 mkdir -p "$DEST"
 chmod 700 "$DEST"
 cp "$HERE/capture.ts" "$DEST/capture.ts"
 cp "$HERE/run-capture.sh" "$DEST/run-capture.sh"
+cp "$HERE/watch-web.sh" "$DEST/watch-web.sh"
 chmod 700 "$DEST/run-capture.sh"
+chmod 700 "$DEST/watch-web.sh"
 
 if [ ! -f "$DEST/env" ]; then
   echo "WARNING: $DEST/env is missing. Create it with WORK_LIVE_BASE_URL," >&2
@@ -31,3 +34,11 @@ launchctl kickstart -k "gui/$UID_/$LABEL"
 
 echo "Installed $LABEL -> $DEST"
 echo "Logs: /tmp/work-live-agent.out.log and /tmp/work-live-agent.err.log"
+
+cp "$HERE/$WATCHDOG_LABEL.plist" "$HOME/Library/LaunchAgents/$WATCHDOG_LABEL.plist"
+launchctl bootout "gui/$UID_/$WATCHDOG_LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$UID_" "$HOME/Library/LaunchAgents/$WATCHDOG_LABEL.plist"
+launchctl enable "gui/$UID_/$WATCHDOG_LABEL" 2>/dev/null || true
+launchctl kickstart -k "gui/$UID_/$WATCHDOG_LABEL"
+
+echo "Installed $WATCHDOG_LABEL"

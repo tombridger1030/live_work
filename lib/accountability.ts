@@ -12,6 +12,8 @@ import {
 } from "@/lib/store";
 import { sendTelegram } from "@/lib/telegram";
 import { appTimeZone, localDayKey, weekStartForDay } from "@/lib/time";
+import { captureFreshnessForMirror, captureHealthForMirror, readLatestMirror } from "@/lib/mirror";
+import { captureMonitorAction } from "@/lib/capture-health";
 import type { NudgeState } from "@/lib/types";
 
 // Outreach pace ladder: by each local wall-clock time you should have logged at
@@ -243,6 +245,7 @@ function freshNudgeState(day: string): NudgeState {
     lastAwayNudgeAt: null,
     checkpointsSent: {},
     snoozeMinutesToday: 0,
+    captureIncident: null,
   };
 }
 
@@ -254,7 +257,40 @@ export function currentNudgeState(
   now: Date = new Date(),
 ): NudgeState {
   const { today } = localParts(now);
-  return state && state.day === today ? state : freshNudgeState(today);
+  return state && state.day === today
+    ? { ...state, captureIncident: state.captureIncident ?? null }
+    : freshNudgeState(today);
+}
+
+async function monitorCapture(state: NudgeState, now: Date): Promise<void> {
+  const snapshot = await readLatestMirror(now);
+  if (!snapshot) return;
+
+  const health = captureHealthForMirror(snapshot);
+  const freshness = captureFreshnessForMirror(snapshot, now);
+  if (!freshness.expected) return;
+
+  const send = async (kind: string, text: string): Promise<boolean> => {
+    try {
+      await sendTelegram(text);
+      await appendNudgeMessage({ direction: "out", kind, text });
+      return true;
+    } catch (error) {
+      console.warn(`[work-live] capture alert send failed (${kind}):`, (error as Error).message);
+      return false;
+    }
+  };
+
+  const action = captureMonitorAction(health, freshness, state.captureIncident);
+  if (action.kind === "failure") {
+    const age = action.ageMinutes === null ? "never" : `${action.ageMinutes}m ago`;
+    if (await send("capture-failure", `🚨 Tally capture alert: ${freshness.reason ?? "stale capture"}; last image ${age}.`)) {
+      state.captureIncident = { key: action.key, startedAt: now.toISOString() };
+    }
+  } else if (action.kind === "recovery") {
+    const recovered = await send("capture-recovery", "✅ Tally capture recovered; a new image is arriving again.");
+    if (recovered) state.captureIncident = null;
+  }
 }
 
 /**
@@ -279,13 +315,17 @@ export async function evaluateAndNudge(now: Date = new Date()): Promise<void> {
   }
 
   const settings = await getSettings();
+  const state = currentNudgeState(settings.nudgeState, now);
+  if (!settings.paused) await monitorCapture(state, now);
   if (settings.paused) {
+    await setNudgeState(state);
     return;
   }
   if (
     settings.snoozeUntil &&
     now.getTime() < new Date(settings.snoozeUntil).getTime()
   ) {
+    await setNudgeState(state);
     return;
   }
 
@@ -293,8 +333,6 @@ export async function evaluateAndNudge(now: Date = new Date()): Promise<void> {
     return;
   }
   const minutesOfDay = hh * 60 + mm;
-
-  const state = currentNudgeState(settings.nudgeState, now);
 
   const latest = await latestSnapshot();
   const fresh =

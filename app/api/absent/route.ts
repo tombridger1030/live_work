@@ -6,6 +6,7 @@ import { checkCaptureRateLimit } from "@/lib/rate-limit";
 import { rollupCurrentHour } from "@/lib/rollup";
 import { getSettings } from "@/lib/store";
 import { isQuietNow } from "@/lib/time";
+import { recordCaptureAttempt, recordCaptureFailure } from "@/lib/capture-health";
 
 export const runtime = "nodejs";
 
@@ -33,7 +34,16 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const settings = await getSettings();
+  const captureAttemptId = request.headers.get("x-capture-attempt-id")?.trim() || null;
+  if (captureAttemptId) await recordCaptureAttempt();
+
+  let settings;
+  try {
+    settings = await getSettings();
+  } catch (error) {
+    if (captureAttemptId) await recordCaptureFailure("storage_failed", (error as Error).message);
+    return jsonError("Capture store unavailable", 503);
+  }
   if (settings.paused) {
     return jsonError("Capture paused", 423);
   }
@@ -41,7 +51,14 @@ export async function POST(request: Request): Promise<Response> {
     return jsonError("Capture closed (quiet hours)", 423);
   }
 
-  const result = await saveAbsentSnapshot();
+  let result;
+  try {
+    result = await saveAbsentSnapshot(captureAttemptId);
+  } catch (error) {
+    if (captureAttemptId) await recordCaptureFailure("storage_failed", (error as Error).message);
+    return jsonError("Capture failed", 500);
+  }
+  if (captureAttemptId) await recordCaptureFailure("camera_unavailable", "Webcam capture was unavailable");
   if (!result.stored || !result.snapshot) {
     return Response.json({ stored: false, score: result.score.score, status: result.score.status });
   }

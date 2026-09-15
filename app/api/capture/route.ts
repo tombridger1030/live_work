@@ -6,6 +6,12 @@ import { checkCaptureRateLimit } from "@/lib/rate-limit";
 import { getSettings } from "@/lib/store";
 import { isQuietNow } from "@/lib/time";
 import { VisionAnalysisError } from "@/lib/vision";
+import {
+  captureFailureClassForError,
+  recordCaptureAttempt,
+  recordCaptureFailure,
+  recordCaptureImage,
+} from "@/lib/capture-health";
 
 export const runtime = "nodejs";
 
@@ -32,7 +38,16 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const settings = await getSettings();
+  const captureAttemptId = request.headers.get("x-capture-attempt-id")?.trim() || null;
+  if (captureAttemptId) await recordCaptureAttempt();
+
+  let settings;
+  try {
+    settings = await getSettings();
+  } catch (error) {
+    if (captureAttemptId) await recordCaptureFailure("storage_failed", (error as Error).message);
+    return jsonError("Capture store unavailable", 503);
+  }
   if (settings.paused) {
     return jsonError("Capture paused", 423);
   }
@@ -52,6 +67,7 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const result = await saveFrameSnapshot(capture, settings);
+    if (captureAttemptId) await recordCaptureImage(result.snapshot?.id ?? null);
     const liveness =
       capture.source === "agent" && result.liveness
         ? { livenessStatus: result.liveness.status, livenessScore: result.liveness.score }
@@ -69,8 +85,10 @@ export async function POST(request: Request): Promise<Response> {
     });
   } catch (error) {
     if (error instanceof VisionAnalysisError) {
+      if (captureAttemptId) await recordCaptureFailure("provider_failed", error.message);
       return jsonError("Vision analysis failed", 502);
     }
+    if (captureAttemptId) await recordCaptureFailure(captureFailureClassForError(error), (error as Error).message);
     return jsonError("Capture failed", 500);
   }
 }

@@ -666,6 +666,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
         {mirror ? (
           <MirrorNotice
             publishedAt={mirror.publishedAt}
+            captureHealth={mirror.captureHealth}
+            captureFreshness={mirror.captureFreshness}
             liveUrl={mirror.liveUrl}
           />
         ) : null}

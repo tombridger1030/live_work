@@ -69,6 +69,18 @@ export function shouldReadViewDayUncached(viewDay: string, today: string): boole
   return viewDay === today;
 }
 
+/** Picks a hero snapshot only from the requested local day. */
+export function latestForViewDay(
+  latest: SnapshotRow | null,
+  daySnapshots: SnapshotRow[],
+  viewDay: string,
+  today: string,
+): SnapshotRow | null {
+  const dayLast = daySnapshots.at(-1) ?? null;
+  if (viewDay !== today) return dayLast;
+  return latest && localDayKey(new Date(latest.capturedAt)) === viewDay ? latest : null;
+}
+
 function criticalHourCount(hourly: HourlyCheckin[]): number {
   return hourly.filter((checkin) => isScoringHour(checkin.hour) && checkin.critical).length;
 }
@@ -263,9 +275,10 @@ export async function getDashboardData(now = new Date(), requestedDay?: string):
     cachedSnapshotCountsByDay(AVERAGE_WINDOW_DAYS)
   ]);
 
-  // Every snapshot grouped by its local hour; the hero shows the latest, the
-  // hour-detail filmstrip shows them all.
+  // Every snapshot grouped by its local hour. The hero must never borrow a
+  // snapshot from another local day when today has not captured anything yet.
   const hourlyFrames = framesByHour(daySnapshots);
+  const latestForView = latestForViewDay(latest, daySnapshots, viewDay, today);
 
   // Rolling averages are window-anchored to real today, independent of viewDay.
   const snapshotsByDay = new Map(
@@ -275,13 +288,12 @@ export async function getDashboardData(now = new Date(), requestedDay?: string):
   const averages = buildAverageStats(daily);
   const previousStats = await previousStatsForViewDay(daily, viewDay, isToday, now, recentHours);
 
-  const dayLast = daySnapshots.at(-1) ?? null;
   const defaultHour = isToday
-    ? latest
-      ? localHour(new Date(latest.capturedAt))
+    ? latestForView
+      ? localHour(new Date(latestForView.capturedAt))
       : null
-    : dayLast
-      ? localHour(new Date(dayLast.capturedAt))
+    : latestForView
+      ? localHour(new Date(latestForView.capturedAt))
       : null;
 
   // Navigate only across days that actually have data; never into the future.
@@ -303,8 +315,8 @@ export async function getDashboardData(now = new Date(), requestedDay?: string):
     nextDay,
     dataDays: days,
     timeZone: appTimeZone(),
-    latest,
-    statusState: publicStatusFor(latest, settings, now),
+    latest: latestForView,
+    statusState: publicStatusFor(latestForView, settings, now),
     hourly,
     hourlyFrames,
     defaultHour,

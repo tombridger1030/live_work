@@ -36,6 +36,7 @@ type SaveSnapshotInput = {
   signals: Signals;
   score: ScoreResult;
   thumbnail: Uint8Array;
+  captureAttemptId?: string | null;
 } & SnapshotCaptureMetadata;
 type SnapshotCaptureMetadata = {
   frameHash?: string | null;
@@ -55,13 +56,17 @@ type LocalState = {
   nudgeMessages: NudgeMessage[];
   feedback: FeedbackEntry[];
   settings: Settings;
+  captureAttempts?: Record<string, string>;
 };
 
 // Local data root — the JSON store + thumbnails. Override with WORK_LIVE_DATA_DIR
 // (e.g. a mounted external drive) so data lives off the boot/SD volume; defaults
 // to the repo's .work-live for local dev.
-const localRoot =
-  process.env.WORK_LIVE_DATA_DIR || path.join(process.cwd(), ".work-live");
+export function localDataRoot(): string {
+  return process.env.WORK_LIVE_DATA_DIR || path.join(process.cwd(), ".work-live");
+}
+
+const localRoot = localDataRoot();
 const localStoreFile = path.join(localRoot, "store.json");
 const localThumbRoot = path.join(localRoot, "thumbs");
 
@@ -97,6 +102,7 @@ function defaultState(): LocalState {
     weeklyGoals: [],
     nudgeMessages: [],
     feedback: [],
+    captureAttempts: {},
     settings: {
       paused: false,
       blur: false,
@@ -126,6 +132,7 @@ async function readLocalState(): Promise<LocalState> {
     weeklyGoals: state.weeklyGoals ?? [],
     nudgeMessages: state.nudgeMessages ?? [],
     feedback: state.feedback ?? [],
+    captureAttempts: state.captureAttempts ?? {},
   };
 }
 
@@ -389,27 +396,28 @@ function mapNudgeMessage(row: Record<string, unknown>): NudgeMessage {
 export async function saveSnapshot(
   input: SaveSnapshotInput,
 ): Promise<SnapshotRow> {
-  const id = randomUUID();
   const capturedAt = input.capturedAt ?? new Date();
-  const stored = await persistThumbnail(id, input.thumbnail);
-  const row: SnapshotRow = {
-    id,
-    capturedAt: capturedAt.toISOString(),
-    ...input.signals,
-    ...input.score,
-    // Expose a cacheable route URL, not the raw bytes; the thumbnail itself lives
-    // in the `thumb_url` column (data URI) or local file and is served by the route.
-    thumbUrl: `/api/thumb/${id}`,
-    frameHash: input.frameHash ?? null,
-    captureSource: input.captureSource ?? null,
-    frameSignature: input.frameSignature ?? null,
-    proofSignature: input.proofSignature ?? null,
-    livenessStatus: input.livenessStatus ?? null,
-    livenessScore: input.livenessScore ?? null,
-    visionModel: input.visionModel ?? null,
-  };
+  const buildRow = (id: string, stored: string): SnapshotRow => ({
+      id,
+      capturedAt: capturedAt.toISOString(),
+      ...input.signals,
+      ...input.score,
+      // Expose a cacheable route URL, not the raw bytes; the thumbnail itself lives
+      // in the `thumb_url` column (data URI) or local file and is served by the route.
+      thumbUrl: `/api/thumb/${id}`,
+      frameHash: input.frameHash ?? null,
+      captureSource: input.captureSource ?? null,
+      frameSignature: input.frameSignature ?? null,
+      proofSignature: input.proofSignature ?? null,
+      livenessStatus: input.livenessStatus ?? null,
+      livenessScore: input.livenessScore ?? null,
+      visionModel: input.visionModel ?? null,
+    });
 
   if (hasPostgresConfig()) {
+    const id = randomUUID();
+    const stored = await persistThumbnail(id, input.thumbnail);
+    const row = buildRow(id, stored);
     const sql = await sqlClient();
     await sql`
       INSERT INTO snapshots (
@@ -428,16 +436,31 @@ export async function saveSnapshot(
     return row;
   }
 
-  const state = await readLocalState();
-  state.snapshots = [row, ...state.snapshots]
-    .sort(
-      (left, right) =>
-        new Date(right.capturedAt).getTime() -
-        new Date(left.capturedAt).getTime(),
-    )
-    .slice(0, localSnapshotLimit);
-  await writeLocalState(state);
-  return row;
+  return withLocalState(async (state) => {
+    const attemptId = input.captureAttemptId ?? null;
+    const existingId = attemptId ? state.captureAttempts?.[attemptId] : null;
+    const existing = existingId
+      ? state.snapshots.find((snapshot) => snapshot.id === existingId)
+      : null;
+    if (existing) return existing;
+
+    const id = randomUUID();
+    const stored = await persistThumbnail(id, input.thumbnail);
+    const row = buildRow(id, stored);
+    state.snapshots = [row, ...state.snapshots]
+      .sort(
+        (left, right) =>
+          new Date(right.capturedAt).getTime() -
+          new Date(left.capturedAt).getTime(),
+      )
+      .slice(0, localSnapshotLimit);
+    if (attemptId) {
+      const attempts = { ...(state.captureAttempts ?? {}), [attemptId]: id };
+      const entries = Object.entries(attempts);
+      state.captureAttempts = Object.fromEntries(entries.slice(-512));
+    }
+    return row;
+  });
 }
 
 export async function latestSnapshot(): Promise<SnapshotRow | null> {
@@ -452,6 +475,14 @@ export async function latestSnapshot(): Promise<SnapshotRow | null> {
 
   const state = await readLocalState();
   return state.snapshots[0] ?? null;
+}
+
+/** Returns the previously persisted row for one local capture retry key. */
+export async function snapshotForCaptureAttempt(attemptId: string): Promise<SnapshotRow | null> {
+  if (hasPostgresConfig()) return null;
+  const state = await readLocalState();
+  const id = state.captureAttempts?.[attemptId];
+  return id ? state.snapshots.find((snapshot) => snapshot.id === id) ?? null : null;
 }
 
 export async function snapshotsSince(since: Date): Promise<SnapshotRow[]> {
@@ -474,6 +505,40 @@ export async function snapshotsSince(since: Date): Promise<SnapshotRow[]> {
         new Date(left.capturedAt).getTime() -
         new Date(right.capturedAt).getTime(),
     );
+}
+
+export type CaptureStoreStatus = {
+  settings: Settings;
+  latest: SnapshotRow | null;
+  recentSnapshots: SnapshotRow[];
+};
+
+/**
+ * Reads the capture status from one local JSON snapshot instead of performing
+ * three independent external-drive reads. Postgres keeps the equivalent query
+ * behavior, while local storage gets one consistent point-in-time view.
+ */
+export async function readCaptureStoreStatus(since: Date): Promise<CaptureStoreStatus> {
+  if (hasPostgresConfig()) {
+    const [settings, latest, recentSnapshots] = await Promise.all([
+      getSettings(),
+      latestSnapshot(),
+      snapshotsSince(since),
+    ]);
+    return { settings, latest, recentSnapshots };
+  }
+
+  const state = await readLocalState();
+  const snapshots = [...state.snapshots].sort(
+    (left, right) => new Date(right.capturedAt).getTime() - new Date(left.capturedAt).getTime(),
+  );
+  return {
+    settings: state.settings,
+    latest: snapshots[0] ?? null,
+    recentSnapshots: snapshots
+      .filter((snapshot) => new Date(snapshot.capturedAt).getTime() >= since.getTime())
+      .sort((left, right) => new Date(left.capturedAt).getTime() - new Date(right.capturedAt).getTime()),
+  };
 }
 
 /**

@@ -92,6 +92,8 @@ See [`.env.example`](.env.example) for the full list. In short:
   vision model
 - `WORK_LIVE_BASE_URL`, `WORK_LIVE_TIME_ZONE`, `WORK_LIVE_CAMERA_NAME` — agent
   target and local capture config
+- `WORK_LIVE_BUILD_ID` — set automatically by the local web supervisor; exposed
+  only as a non-secret health diagnostic
 - `POSTGRES_URL` — injected automatically by the Vercel Neon integration in
   production; unset locally falls back to on-disk thumbnails
 - Telegram nudge + build-counter vars (`TELEGRAM_*`, `GITHUB_*`, `OPENROUTER_KEY`, `SNOOZE_MODEL`) — see "Accountability nudges (Telegram)" below
@@ -133,6 +135,11 @@ Setup:
    cadence isn't load-bearing: the 8am and outreach nudges fire regardless of
    whether the Mac is awake; the "wandered off" nudge only when a fresh capture
    exists.
+
+The same accountability sweep checks the deployed mirror's capture-health
+record. It alerts once after 20 minutes without an expected real image and
+sends one recovery message after the next successful image; pause and quiet
+hours suppress the check.
 
 ## The capture agent
 

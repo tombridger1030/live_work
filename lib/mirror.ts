@@ -11,6 +11,13 @@ import {
   readDashboardOverrides,
 } from "@/lib/dashboard-overrides";
 import { applyLedgerOverrides, readLedgerOverrides } from "@/lib/ledger-overrides";
+import {
+  captureFreshnessFor,
+  captureHealthFromLatest,
+  mergeCaptureHealthWithLatest,
+  readCaptureHealth,
+} from "@/lib/capture-health";
+import type { CaptureFreshness, CaptureHealth } from "@/lib/types";
 
 export { listArchivedDays } from "@/lib/mirror-archive";
 
@@ -38,13 +45,29 @@ export { listArchivedDays } from "@/lib/mirror-archive";
 const MIRROR_PATHNAME = "mirror/dashboard.json";
 
 export type MirrorSnapshot = {
-  /** When the Mac published this copy (ISO 8601). Drives the staleness line in the UI. */
+  /** When the Mac published this copy (ISO 8601); not capture freshness. */
   publishedAt: string;
+  /** Agent health, including the last actual image capture. */
+  captureHealth?: CaptureHealth;
   /** Dashboard data with same-origin compact image references for all hours. */
   data: DashboardData;
   /** Ledger state from the same publish; absent only on pre-ledger mirror blobs. */
   ledger?: LedgerData;
 };
+
+export function captureHealthForMirror(snapshot: MirrorSnapshot): CaptureHealth {
+  return mergeCaptureHealthWithLatest(
+    snapshot.captureHealth ?? captureHealthFromLatest(snapshot.data.latest),
+    snapshot.data.latest,
+  );
+}
+
+export function captureFreshnessForMirror(
+  snapshot: MirrorSnapshot,
+  now = new Date(),
+): CaptureFreshness {
+  return captureFreshnessFor(captureHealthForMirror(snapshot), snapshot.data.settings, now);
+}
 
 /**
  * True when this process is the always-on deployment rather than the Mac.
@@ -120,7 +143,7 @@ export async function publishMirror(
   ledger: LedgerData,
   now = new Date(),
   io = archiveIO,
-  { archiveOnly = false }: { archiveOnly?: boolean } = {},
+  { archiveOnly = false, captureHealth }: { archiveOnly?: boolean; captureHealth?: CaptureHealth } = {},
 ): Promise<boolean> {
   if (isMirrorHost() || (io === archiveIO && !process.env.BLOB_READ_WRITE_TOKEN)) {
     return false;
@@ -131,6 +154,7 @@ export async function publishMirror(
     if (data.latest) frames.set(data.latest.id, data.latest);
     const snapshot: MirrorSnapshot = {
       publishedAt: now.toISOString(),
+      captureHealth: captureHealth ?? captureHealthFromLatest(data.latest),
       data: await buildMirrorDashboardCopy(data, (id) => {
         const day = localDayKey(new Date(frames.get(id)!.capturedAt));
         return archiveIncludes(day, now)
@@ -158,15 +182,17 @@ let publishInFlight: Promise<void> | null = null;
 let publishAgainWhenDone = false;
 
 async function publishLatest(): Promise<void> {
-  const [{ getDashboardData }, { getLedgerData }] = await Promise.all([
+  const [{ getDashboardData }, { getLedgerData }, healthModule] = await Promise.all([
     import("@/lib/dashboard"),
     import("@/lib/ledger-server"),
+    import("@/lib/capture-health"),
   ]);
-  const [dashboard, ledger] = await Promise.all([
+  const [dashboard, ledger, captureHealth] = await Promise.all([
     getDashboardData(),
     getLedgerData(),
+    healthModule.readCaptureHealth(),
   ]);
-  await publishMirror(dashboard, ledger);
+  await publishMirror(dashboard, ledger, new Date(), archiveIO, { captureHealth });
 }
 
 /**

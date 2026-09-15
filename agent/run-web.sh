@@ -24,4 +24,23 @@ BUN="/Users/tombridger/.bun/bin/bun"
 PORT="${WORK_LIVE_PORT:-3100}"
 
 cd "$REPO"
+# launchd supplies a deliberately minimal PATH. The build script invokes Bun
+# for its final build-identity write, so make that dependency available to the
+# whole child process tree rather than relying on an interactive shell profile.
+export PATH="$(/usr/bin/dirname "$BUN"):/opt/homebrew/bin:/usr/local/bin:$PATH"
+BUILD_ID_FILE="$REPO/.next/WORK_LIVE_BUILD_ID"
+GIT="/opt/homebrew/bin/git"
+EXPECTED_BUILD="$($GIT -C "$REPO" rev-parse HEAD)"
+if [ -n "$($GIT -C "$REPO" status --porcelain)" ]; then
+  EXPECTED_BUILD="${EXPECTED_BUILD}-dirty"
+fi
+if [ ! -s "$BUILD_ID_FILE" ]; then
+  echo "[work-live] missing production build; rebuilding" >&2
+  "$BUN" run build || { sleep 60; exit 1; }
+fi
+if [ "$(/bin/cat "$BUILD_ID_FILE" 2>/dev/null)" != "$EXPECTED_BUILD" ]; then
+  echo "[work-live] production build is out of date; rebuilding" >&2
+  "$BUN" run build || { sleep 60; exit 1; }
+fi
+export WORK_LIVE_BUILD_ID="$EXPECTED_BUILD"
 exec "$BUN" run start -- -H 127.0.0.1 -p "$PORT"

@@ -53,6 +53,51 @@ export type SnapshotRow = Signals &
     visionModel?: string | null;
   };
 
+export type CaptureFailureClass =
+  | "status_unavailable"
+  | "camera_unavailable"
+  | "upload_failed"
+  | "authentication_failed"
+  | "storage_failed"
+  | "provider_failed"
+  | "mirror_failed"
+  | "unknown";
+
+/**
+ * Durable health facts for the capture agent, separate from scored snapshots.
+ * `lastAttemptAt` proves the scheduled loop is running; `lastImageAt` proves a
+ * real image reached the server. An absent fallback updates only the former.
+ */
+export type CaptureHealth = {
+  lastAttemptAt: string | null;
+  lastImageAt: string | null;
+  lastImageId: string | null;
+  lastFailureAt: string | null;
+  lastFailure: CaptureFailureClass | null;
+  lastFailureMessage: string | null;
+};
+
+export type CaptureFreshnessReason =
+  | "paused"
+  | "quiet_hours"
+  | "no_attempt"
+  | "agent_stale"
+  | "image_stale"
+  | "camera_unavailable"
+  | "upload_failed"
+  | "storage_failed"
+  | "provider_failed"
+  | "unknown_failure";
+
+/** The public, computed distinction between a recent attempt and a recent image. */
+export type CaptureFreshness = {
+  expected: boolean;
+  stale: boolean;
+  reason: CaptureFreshnessReason | null;
+  attemptAgeMinutes: number | null;
+  imageAgeMinutes: number | null;
+};
+
 // One logged human correction — which signal was overridden and the model->human
 // value change. Mirrors the Postgres `feedback` table so the local store can power
 // the same eval/regression export (humanVerifiedCases) offline.
@@ -94,6 +139,10 @@ export type NudgeState = {
   lastAwayNudgeAt: string | null; // ISO of the last "wandered off" buzz
   checkpointsSent: Record<string, boolean>; // checkpoint "at" -> already nudged
   snoozeMinutesToday: number; // total granted mute minutes today
+  captureIncident?: {
+    key: string;
+    startedAt: string;
+  } | null;
 };
 
 export type Settings = {

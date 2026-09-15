@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { framesByHour, shouldReadViewDayUncached, statsUpToLocalTime } from "@/lib/dashboard";
+import { framesByHour, latestForViewDay, shouldReadViewDayUncached, statsUpToLocalTime } from "@/lib/dashboard";
 import { frameStripRange, frameStripStartForSelection, shiftFrameStripWindow } from "@/lib/frame-strip";
 import type { HourlyCheckin, SnapshotRow } from "@/lib/types";
 
@@ -103,4 +103,10 @@ test("statsUpToLocalTime compares only through the current local minute", () => 
 test("live dashboard day bypasses cached snapshot/hourly reads", () => {
   expect(shouldReadViewDayUncached("2026-06-19", "2026-06-19")).toBe(true);
   expect(shouldReadViewDayUncached("2026-06-18", "2026-06-19")).toBe(false);
+});
+
+test("today never borrows yesterday's latest snapshot when there is no capture today", () => {
+  const yesterday = frame("yesterday", "2026-06-18T23:55:00Z", 90);
+  expect(latestForViewDay(yesterday, [], "2026-06-19", "2026-06-19")).toBeNull();
+  expect(latestForViewDay(yesterday, [yesterday], "2026-06-18", "2026-06-19")?.id).toBe("yesterday");
 });

@@ -1,6 +1,6 @@
 import { Dashboard } from "@/components/Dashboard";
 import { getDashboardData } from "@/lib/dashboard";
-import { isMirrorHost, readMirror } from "@/lib/mirror";
+import { captureFreshnessForMirror, captureHealthForMirror, isMirrorHost, readMirror } from "@/lib/mirror";
 import Link from "next/link";
 import { isValidDayKey } from "@/lib/time";
 
@@ -30,6 +30,8 @@ export default async function Home({
           data={snapshot.data}
           mirror={{
             publishedAt: snapshot.publishedAt,
+            captureHealth: captureHealthForMirror(snapshot),
+            captureFreshness: captureFreshnessForMirror(snapshot),
           }}
         />
       );

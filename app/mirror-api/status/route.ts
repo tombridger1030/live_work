@@ -1,4 +1,9 @@
-import { readLatestMirror, readMirror } from "@/lib/mirror";
+import {
+  captureFreshnessForMirror,
+  captureHealthForMirror,
+  readLatestMirror,
+  readMirror,
+} from "@/lib/mirror";
 
 export const dynamic = "force-dynamic";
 
@@ -8,9 +13,13 @@ export async function GET() {
   // publisher may be newer than the archive; comparing them causes reload loops.
   const snapshot = await readMirror() ?? await readLatestMirror();
   if (!snapshot) return Response.json({ error: "Capture data is temporarily unavailable" }, { status: 503 });
+  const captureHealth = captureHealthForMirror(snapshot);
+  const captureFreshness = captureFreshnessForMirror(snapshot);
   return Response.json({
-    latestId: snapshot.data.latest?.id ?? null,
-    capturedAt: snapshot.data.latest?.capturedAt ?? null,
+    latestId: captureHealth.lastImageId,
+    capturedAt: captureHealth.lastImageAt,
     publishedAt: snapshot.publishedAt,
+    captureHealth,
+    captureFreshness,
   }, { headers: { "Cache-Control": "no-store" } });
 }

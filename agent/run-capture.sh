@@ -33,6 +33,7 @@ CAPTURE_WARMUP="${WORK_LIVE_CAPTURE_WARMUP:-2}"
 # Seconds between the scored frame and the liveness proof frame. A frozen feed
 # repeats exactly; a live camera should drift from sensor noise, exposure, or motion.
 LIVENESS_GAP="${WORK_LIVE_LIVENESS_GAP:-1}"
+ATTEMPT_ID="$(/usr/bin/uuidgen 2>/dev/null || /bin/date +%s)-$$"
 
 
 # 1. Pause check via the server (no camera opened). Exit quietly when paused.
@@ -68,10 +69,10 @@ snap() {
 if snap "$WORK_LIVE_CAMERA_NAME" "$FRAME"; then
   sleep "$LIVENESS_GAP"
   if snap "$WORK_LIVE_CAMERA_NAME" "$PROOF_FRAME"; then
-    "$BUN" "$DIR/capture.ts" post "$FRAME" "$PROOF_FRAME"
+    "$BUN" "$DIR/capture.ts" post "$FRAME" "$PROOF_FRAME" "$ATTEMPT_ID"
   else
-    "$BUN" "$DIR/capture.ts" post "$FRAME"
+    "$BUN" "$DIR/capture.ts" post "$FRAME" "" "$ATTEMPT_ID"
   fi
 else
-  "$BUN" "$DIR/capture.ts" absent
+  "$BUN" "$DIR/capture.ts" absent "" "" "$ATTEMPT_ID"
 fi

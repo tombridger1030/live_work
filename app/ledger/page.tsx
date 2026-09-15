@@ -1,6 +1,11 @@
 import { getLedgerData } from "@/lib/ledger-server";
 import { Ledger } from "@/components/Ledger";
-import { isMirrorHost, readLatestMirror } from "@/lib/mirror";
+import {
+  captureFreshnessForMirror,
+  captureHealthForMirror,
+  isMirrorHost,
+  readLatestMirror,
+} from "@/lib/mirror";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 15;
@@ -18,6 +23,8 @@ export default async function LedgerPage() {
           data={snapshot.ledger}
           mirror={{
             publishedAt: snapshot.publishedAt,
+            captureHealth: captureHealthForMirror(snapshot),
+            captureFreshness: captureFreshnessForMirror(snapshot),
           }}
         />
       );
