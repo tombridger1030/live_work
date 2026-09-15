@@ -4,6 +4,7 @@ import { appTimeZone, captureIntervalMinutes, isScoringHour, localDayKey, localH
 import { publicStatusFor, type PublicStatusState } from "@/lib/status";
 import type { AverageStats, AverageWindow, DayHistory, HourlyCheckin, Settings, SnapshotRow, TodayStats } from "@/lib/types";
 import { visionHealthFrom, type VisionHealth } from "@/lib/vision-health";
+import { readCaptureHealth } from "@/lib/capture-health";
 
 
 // Cache the slow, mostly historical reads (a year-wide aggregate, old per-day
@@ -29,6 +30,7 @@ export type DashboardData = {
   nextDay: string | null; // nearest later day with data (never the future), else null
   dataDays: string[]; // every local day with at least one check-in, newest first; powers the date picker
   latest: SnapshotRow | null; // live latest snapshot; drives the live status today
+  lastActualCaptureAt: string | null; // last successful image capture, independent of viewDay
   statusState: PublicStatusState; // live status; only meaningful when isToday
   hourly: HourlyCheckin[]; // viewDay's per-hour aggregates
   hourlyFrames: Record<number, SnapshotRow[]>; // viewDay's snapshots grouped by local hour, ascending
@@ -264,7 +266,7 @@ export async function getDashboardData(now = new Date(), requestedDay?: string):
   const readHourlyForViewDay = shouldReadViewDayUncached(viewDay, today) ? hourlyForDay : cachedHourlyForDay;
   const readSnapshotsForViewDay = shouldReadViewDayUncached(viewDay, today) ? snapshotsForDay : cachedSnapshotsForDay;
 
-  const [latest, hourly, settings, daySnapshots, days, history, recentHours, snapshotCounts] = await Promise.all([
+  const [latest, hourly, settings, daySnapshots, days, history, recentHours, snapshotCounts, captureHealth] = await Promise.all([
     latestSnapshot(),
     readHourlyForViewDay(viewDay),
     getSettings(),
@@ -272,7 +274,8 @@ export async function getDashboardData(now = new Date(), requestedDay?: string):
     cachedDaysWithData(),
     cachedDailyHistory(HISTORY_DAYS),
     cachedRecentScoringHours(AVERAGE_WINDOW_DAYS),
-    cachedSnapshotCountsByDay(AVERAGE_WINDOW_DAYS)
+    cachedSnapshotCountsByDay(AVERAGE_WINDOW_DAYS),
+    readCaptureHealth(),
   ]);
 
   // Every snapshot grouped by its local hour. The hero must never borrow a
@@ -316,6 +319,7 @@ export async function getDashboardData(now = new Date(), requestedDay?: string):
     dataDays: days,
     timeZone: appTimeZone(),
     latest: latestForView,
+    lastActualCaptureAt: captureHealth.lastImageAt ?? (latest?.captureSource === "absent" ? null : latest?.capturedAt ?? null),
     statusState: publicStatusFor(latestForView, settings, now),
     hourly,
     hourlyFrames,

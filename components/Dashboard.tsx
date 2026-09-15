@@ -685,6 +685,7 @@ export function Dashboard({
       : averageMetrics(data.averages.last7, data.averages.previous7);
   const lastActualCaptureAt =
     mirror?.captureHealth.lastImageAt ??
+    data.lastActualCaptureAt ??
     (data.latest?.captureSource === "absent" ? null : data.latest?.capturedAt ?? null);
   // The snapshot as shown: the server row plus any optimistic correction, re-scored
   // exactly as the server will (same scoreFrom) so the hero score and status already
