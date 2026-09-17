@@ -40,7 +40,7 @@ const checkinRows = rowsOf<Record<string, unknown>>(
   await pool.query(`SELECT to_char(day,'YYYY-MM-DD') AS day, hour, avg_score, present_pct, headphones_pct, verdict, critical FROM hourly_checkins`)
 );
 const ledgerRows = rowsOf<Record<string, unknown>>(
-  await pool.query(`SELECT to_char(day,'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, commits, merges FROM scoreboard_entries`)
+  await pool.query(`SELECT to_char(day,'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, commits, merges FROM scoreboard_entries`)
 );
 const goalRows = rowsOf<Record<string, unknown>>(
   await pool.query(`SELECT to_char(week_start,'YYYY-MM-DD') AS week_start, reachouts, hours FROM weekly_goals`)
@@ -157,6 +157,8 @@ for (const row of ledgerRows) {
     featureDone: Boolean(row.feature_done),
     replies: Number(row.replies),
     meetings: Number(row.meetings),
+    connections: Number(row.connections ?? 0),
+    followUpsSent: Number(row.follow_ups_sent ?? 0),
     commits: Number(row.commits),
     merges: Number(row.merges)
   });

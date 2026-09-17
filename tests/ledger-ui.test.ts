@@ -22,6 +22,8 @@ const sampleDay: LedgerDay = {
   featureDone: true,
   replies: 0,
   meetings: 0,
+  connections: 0,
+  followUpsSent: 0,
   commits: 0,
   merges: 0,
   targets: { reachouts: 250 / 7, hours: 70 / 7 },

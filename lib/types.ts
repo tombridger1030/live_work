@@ -186,6 +186,8 @@ export type LedgerEntry = {
   featureDone: boolean; // manual: at least one e2e-tested feature shipped that day
   replies: number; // manual: replies received that day, >= 0
   meetings: number; // manual: meetings booked that day, >= 0
+  connections?: number; // manual: new connections that day, >= 0
+  followUpsSent?: number; // manual: follow-ups sent that day, >= 0
   commits: number; // auto: commits to the build repo that day, >= 0
   merges: number; // auto: merged PRs to the build repo that day, >= 0
 };

@@ -71,6 +71,8 @@ export type LedgerDay = {
   featureDone: boolean; // Legacy stored data only; never contributes to activity.
   replies: number;
   meetings: number;
+  connections: number;
+  followUpsSent: number;
   commits: number;
   merges: number;
   targets: DailyTargets; // this day's share of its own week's goal
@@ -267,6 +269,8 @@ export function assembleLedger(
     const featureDone = entry?.featureDone ?? false;
     const replies = entry?.replies ?? 0;
     const meetings = entry?.meetings ?? 0;
+    const connections = entry?.connections ?? 0;
+    const followUpsSent = entry?.followUpsSent ?? 0;
     const commits = entry?.commits ?? 0;
     const merges = entry?.merges ?? 0;
     const hours = inRange ? (hoursByDay.get(day) ?? 0) : 0;
@@ -288,6 +292,8 @@ export function assembleLedger(
       featureDone,
       replies,
       meetings,
+      connections,
+      followUpsSent,
       commits,
       merges,
       targets,

@@ -26,7 +26,7 @@ function goalValidationMessage(error: string): string {
     return "Choose a valid Monday.";
   }
   if (error.startsWith("weeklyReachouts")) {
-    return `Messages must be a whole number from ${WEEKLY_GOAL_MIN_REACHOUTS.toLocaleString()} to ${WEEKLY_GOAL_MAX_REACHOUTS.toLocaleString()}.`;
+    return `Touches must be a whole number from ${WEEKLY_GOAL_MIN_REACHOUTS.toLocaleString()} to ${WEEKLY_GOAL_MAX_REACHOUTS.toLocaleString()}.`;
   }
   return `Hours must be from ${WEEKLY_GOAL_MIN_HOURS} to ${WEEKLY_GOAL_MAX_HOURS}.`;
 }
@@ -146,9 +146,9 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
 
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-xs text-zinc-400">
-              Messages / week
+              Touches / week
               <Input
-                aria-label="Messages per week"
+                aria-label="Touches per week"
                 className="mt-1 border-white/[0.1] bg-black/30 text-zinc-100"
                 type="number"
                 min={WEEKLY_GOAL_MIN_REACHOUTS}

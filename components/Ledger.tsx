@@ -50,6 +50,7 @@ export type LedgerProps = {
 };
 
 const WEEKDAY_COLUMNS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+type LedgerCountField = "replies" | "meetings" | "connections" | "followUpsSent";
 
 function mondayIndex(dayKey: string): number {
   return (new Date(`${dayKey}T12:00:00Z`).getUTCDay() + 6) % 7;
@@ -98,12 +99,16 @@ export function Ledger({ data, mirror }: LedgerProps) {
   const [meetingsDraft, setMeetingsDraft] = useState<Record<string, number>>(
     {},
   );
+  const [connectionsDraft, setConnectionsDraft] = useState<Record<string, number>>({});
+  const [followUpsSentDraft, setFollowUpsSentDraft] = useState<Record<string, number>>({});
   const [repliesState, setRepliesState] = useState<Record<string, SaveState>>(
     {},
   );
   const [meetingsState, setMeetingsState] = useState<Record<string, SaveState>>(
     {},
   );
+  const [connectionsState, setConnectionsState] = useState<Record<string, SaveState>>({});
+  const [followUpsSentState, setFollowUpsSentState] = useState<Record<string, SaveState>>({});
   const [breatheDay, setBreatheDay] = useState<string | null>(null);
   const [sessionRequired, setSessionRequired] = useState(false);
   const [intro, setIntro] = useState(true);
@@ -111,6 +116,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
   const reachoutTimers = useRef<Record<string, number>>({});
   const repliesTimers = useRef<Record<string, number>>({});
   const meetingsTimers = useRef<Record<string, number>>({});
+  const connectionsTimers = useRef<Record<string, number>>({});
+  const followUpsSentTimers = useRef<Record<string, number>>({});
   const breatheTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -138,6 +145,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
       Object.values(meetingsTimers.current).forEach((timer) =>
         window.clearTimeout(timer),
       );
+      Object.values(connectionsTimers.current).forEach((timer) => window.clearTimeout(timer));
+      Object.values(followUpsSentTimers.current).forEach((timer) => window.clearTimeout(timer));
       if (breatheTimer.current !== null) {
         window.clearTimeout(breatheTimer.current);
       }
@@ -204,6 +213,26 @@ export function Ledger({ data, mirror }: LedgerProps) {
       }
       return changed ? next : draft;
     });
+    setConnectionsDraft((draft) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const [day, value] of Object.entries(draft)) {
+        const serverDay = data.days.find((entry) => entry.day === day);
+        if (!serverDay || serverDay.connections === value) changed = true;
+        else next[day] = value;
+      }
+      return changed ? next : draft;
+    });
+    setFollowUpsSentDraft((draft) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const [day, value] of Object.entries(draft)) {
+        const serverDay = data.days.find((entry) => entry.day === day);
+        if (!serverDay || serverDay.followUpsSent === value) changed = true;
+        else next[day] = value;
+      }
+      return changed ? next : draft;
+    });
   }, [data.days]);
 
   const viewDays = useMemo(
@@ -212,10 +241,14 @@ export function Ledger({ data, mirror }: LedgerProps) {
         const nextReachouts = reachoutsDraft[day.day] ?? day.reachouts;
         const nextReplies = repliesDraft[day.day] ?? day.replies;
         const nextMeetings = meetingsDraft[day.day] ?? day.meetings;
+        const nextConnections = connectionsDraft[day.day] ?? day.connections;
+        const nextFollowUpsSent = followUpsSentDraft[day.day] ?? day.followUpsSent;
         if (
           nextReachouts === day.reachouts &&
           nextReplies === day.replies &&
           nextMeetings === day.meetings
+          && nextConnections === day.connections
+          && nextFollowUpsSent === day.followUpsSent
         ) {
           return day;
         }
@@ -224,6 +257,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
           reachouts: nextReachouts,
           replies: nextReplies,
           meetings: nextMeetings,
+          connections: nextConnections,
+          followUpsSent: nextFollowUpsSent,
           dailyValue: day.inRange
             ? dailyValue(nextReachouts, day.hours, day.targets)
             : 0,
@@ -232,7 +267,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
             (nextReachouts > 0 || day.hours > 0),
         };
       }),
-    [data.days, meetingsDraft, reachoutsDraft, repliesDraft],
+    [data.days, connectionsDraft, followUpsSentDraft, meetingsDraft, reachoutsDraft, repliesDraft],
   );
 
   const viewDayMap = useMemo(
@@ -351,11 +386,19 @@ export function Ledger({ data, mirror }: LedgerProps) {
     : "idle";
   const selectedReplies = selectedDayData?.replies ?? 0;
   const selectedMeetings = selectedDayData?.meetings ?? 0;
+  const selectedConnections = selectedDayData?.connections ?? 0;
+  const selectedFollowUpsSent = selectedDayData?.followUpsSent ?? 0;
   const repliesSaveState = selectedDayData
     ? (repliesState[selectedDayData.day] ?? "idle")
     : "idle";
   const meetingsSaveState = selectedDayData
     ? (meetingsState[selectedDayData.day] ?? "idle")
+    : "idle";
+  const connectionsSaveState = selectedDayData
+    ? (connectionsState[selectedDayData.day] ?? "idle")
+    : "idle";
+  const followUpsSentSaveState = selectedDayData
+    ? (followUpsSentState[selectedDayData.day] ?? "idle")
     : "idle";
 
   function beginDaySelection(day: string) {
@@ -373,6 +416,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
       reachouts?: number;
       replies?: number;
       meetings?: number;
+      connections?: number;
+      followUpsSent?: number;
     },
   ) {
     const response = await fetch(mirror ? "/mirror-api/ledger" : "/api/ledger", {
@@ -528,7 +573,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
     }
   }
 
-  // Replies and meetings reuse reachouts' optimistic-draft + debounced-save +
+  // Count fields reuse reachouts' optimistic-draft + debounced-save +
   // inline-retry machinery, parameterized by field. Neither feeds the daily
   // score, so there is no celebrate step; just persist and reconcile.
   const countHooks = {
@@ -542,10 +587,26 @@ export function Ledger({ data, mirror }: LedgerProps) {
       setSave: setMeetingsState,
       timers: meetingsTimers,
     },
+    connections: {
+      setDraft: setConnectionsDraft,
+      setSave: setConnectionsState,
+      timers: connectionsTimers,
+    },
+    followUpsSent: {
+      setDraft: setFollowUpsSentDraft,
+      setSave: setFollowUpsSentState,
+      timers: followUpsSentTimers,
+    },
   } as const;
 
+  function countUpdate(field: LedgerCountField, value: number) {
+    return {
+      [field]: value,
+    } as Record<LedgerCountField, number>;
+  }
+
   function scheduleCountSave(
-    field: "replies" | "meetings",
+    field: LedgerCountField,
     day: string,
     value: number,
   ) {
@@ -553,10 +614,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
     window.clearTimeout(timers.current[day]);
     timers.current[day] = window.setTimeout(async () => {
       try {
-        await persistLedgerUpdate(
-          day,
-          field === "replies" ? { replies: value } : { meetings: value },
-        );
+        await persistLedgerUpdate(day, countUpdate(field, value));
         setSave((state) => ({ ...state, [day]: "idle" }));
       } catch {
         setSave((state) => ({ ...state, [day]: "error" }));
@@ -564,7 +622,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
     }, 360);
   }
 
-  function handleCountChange(field: "replies" | "meetings", nextValue: number) {
+  function handleCountChange(field: LedgerCountField, nextValue: number) {
     if (!selectedDayData) {
       return;
     }
@@ -575,18 +633,16 @@ export function Ledger({ data, mirror }: LedgerProps) {
     scheduleCountSave(field, selectedDayData.day, value);
   }
 
-  async function handleCountRetry(field: "replies" | "meetings") {
+  async function handleCountRetry(field: LedgerCountField) {
     if (!selectedDayData) {
       return;
     }
-    const value = field === "replies" ? selectedReplies : selectedMeetings;
+    const values = { replies: selectedReplies, meetings: selectedMeetings, connections: selectedConnections, followUpsSent: selectedFollowUpsSent };
+    const value = values[field];
     const { setSave } = countHooks[field];
     setSave((state) => ({ ...state, [selectedDayData.day]: "saving" }));
     try {
-      await persistLedgerUpdate(
-        selectedDayData.day,
-        field === "replies" ? { replies: value } : { meetings: value },
-      );
+      await persistLedgerUpdate(selectedDayData.day, countUpdate(field, value));
       setSave((state) => ({ ...state, [selectedDayData.day]: "idle" }));
     } catch {
       setSave((state) => ({ ...state, [selectedDayData.day]: "error" }));
@@ -596,7 +652,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
   const summaryStats = summaryWeek
     ? [
         {
-          label: "Messages",
+          label: "Touches",
           value: summaryWeek.reachouts,
           target: summaryWeek.reachoutsTarget,
           pct: summaryWeek.reachoutsPct,
@@ -653,6 +709,14 @@ export function Ledger({ data, mirror }: LedgerProps) {
           onMeetingsChange={(value) => handleCountChange("meetings", value)}
           onMeetingsRetry={() => handleCountRetry("meetings")}
           meetingsState={meetingsSaveState}
+          connections={selectedConnections}
+          onConnectionsChange={(value) => handleCountChange("connections", value)}
+          onConnectionsRetry={() => handleCountRetry("connections")}
+          connectionsState={connectionsSaveState}
+          followUpsSent={selectedFollowUpsSent}
+          onFollowUpsSentChange={(value) => handleCountChange("followUpsSent", value)}
+          onFollowUpsSentRetry={() => handleCountRetry("followUpsSent")}
+          followUpsSentState={followUpsSentSaveState}
           dailyReachoutTarget={selectedDayData.targets.reachouts}
           dailyHoursTarget={selectedDayData.targets.hours}
         />

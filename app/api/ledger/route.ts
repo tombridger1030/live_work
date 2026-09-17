@@ -120,6 +120,16 @@ export async function POST(request: Request) {
       }
     }
 
+    const connections = body.connections;
+    if (connections !== undefined && (typeof connections !== "number" || !Number.isInteger(connections) || connections < 0 || connections > 1000)) {
+      return Response.json({ error: "connections must be an integer from 0 to 1000" }, { status: 400 });
+    }
+
+    const followUpsSent = body.followUpsSent;
+    if (followUpsSent !== undefined && (typeof followUpsSent !== "number" || !Number.isInteger(followUpsSent) || followUpsSent < 0 || followUpsSent > 1000)) {
+      return Response.json({ error: "followUpsSent must be an integer from 0 to 1000" }, { status: 400 });
+    }
+
     // commits/merges are written by the accountability engine from GitHub, never
     // by a browser client. Reject an attempt to set them so a stray field is
     // surfaced, not silently dropped.
@@ -127,11 +137,13 @@ export async function POST(request: Request) {
       return Response.json({ error: "commits and merges are server-written and cannot be set here" }, { status: 400 });
     }
 
-    const fields: { reachouts?: number; featureDone?: boolean; replies?: number; meetings?: number } = {};
+    const fields: { reachouts?: number; featureDone?: boolean; replies?: number; meetings?: number; connections?: number; followUpsSent?: number } = {};
     if (reachouts !== undefined) fields.reachouts = reachouts;
     if (featureDone !== undefined) fields.featureDone = featureDone;
     if (replies !== undefined) fields.replies = replies;
     if (meetings !== undefined) fields.meetings = meetings;
+    if (connections !== undefined) fields.connections = connections;
+    if (followUpsSent !== undefined) fields.followUpsSent = followUpsSent;
 
     if (Object.keys(fields).length === 0) {
       return Response.json({ error: "nothing to update" }, { status: 400 });

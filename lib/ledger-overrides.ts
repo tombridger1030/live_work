@@ -11,6 +11,8 @@ export type LedgerDayOverride = {
   featureDone?: boolean;
   replies?: number;
   meetings?: number;
+  connections?: number;
+  followUpsSent?: number;
 };
 
 export type LedgerOverrides = {
@@ -30,7 +32,7 @@ function validDayOverride(value: unknown): value is LedgerDayOverride {
   }
   const candidate = value as Record<string, unknown>;
   return Object.entries(candidate).every(([field, fieldValue]) => {
-    if (["reachouts", "replies", "meetings"].includes(field)) {
+    if (["reachouts", "replies", "meetings", "connections", "followUpsSent"].includes(field)) {
       return validCount(fieldValue);
     }
     return field === "featureDone" && typeof fieldValue === "boolean";
@@ -199,6 +201,8 @@ function entryFromDay(day: LedgerData["days"][number]): LedgerEntry {
     featureDone: day.featureDone,
     replies: day.replies,
     meetings: day.meetings,
+    connections: day.connections,
+    followUpsSent: day.followUpsSent,
     commits: day.commits,
     merges: day.merges,
   };

@@ -25,6 +25,14 @@ export type LedgerDayReportProps = {
   onMeetingsChange: (value: number) => void;
   onMeetingsRetry: () => void;
   meetingsState: SaveState;
+  connections: number;
+  onConnectionsChange: (value: number) => void;
+  onConnectionsRetry: () => void;
+  connectionsState: SaveState;
+  followUpsSent: number;
+  onFollowUpsSentChange: (value: number) => void;
+  onFollowUpsSentRetry: () => void;
+  followUpsSentState: SaveState;
   dailyReachoutTarget: number;
   dailyHoursTarget: number;
 };
@@ -119,6 +127,14 @@ export function LedgerDayReport({
   onMeetingsChange,
   onMeetingsRetry,
   meetingsState,
+  connections,
+  onConnectionsChange,
+  onConnectionsRetry,
+  connectionsState,
+  followUpsSent,
+  onFollowUpsSentChange,
+  onFollowUpsSentRetry,
+  followUpsSentState,
   dailyReachoutTarget,
   dailyHoursTarget
 }: LedgerDayReportProps) {
@@ -132,7 +148,7 @@ export function LedgerDayReport({
     <div className="space-y-3">
       <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4">
         <div className="flex items-center justify-between">
-          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-500">Reachouts</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-500">Touches</p>
           <span className={cn("text-xs font-medium capitalize", statusTone(reachoutState))}>{reachoutState}</span>
         </div>
         <div className="mt-2 flex items-end justify-between gap-3">
@@ -141,7 +157,7 @@ export function LedgerDayReport({
             <span className="pb-0.5 text-sm text-zinc-500">/ {Math.round(dailyReachoutTarget)}</span>
           </div>
           <NumberField.Root
-            aria-label="Daily reachouts"
+            aria-label="Daily touches"
             value={reachouts}
             minValue={0}
             maxValue={1000}
@@ -151,14 +167,14 @@ export function LedgerDayReport({
           >
             <NumberField.Group className="flex h-10 items-center rounded-full border border-white/[0.08] bg-black/20 px-1">
               <NumberField.DecrementButton
-                aria-label="Decrease reachouts"
+                aria-label="Decrease touches"
                 className="inline-flex size-10 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
               >
                 <Minus className="size-4" />
               </NumberField.DecrementButton>
               <NumberField.Input className="h-10 w-12 bg-transparent text-center text-base font-semibold text-zinc-50 outline-none" />
               <NumberField.IncrementButton
-                aria-label="Increase reachouts"
+                aria-label="Increase touches"
                 className="inline-flex size-10 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-100 active:scale-[0.96]"
               >
                 <Plus className="size-4" />
@@ -213,6 +229,24 @@ export function LedgerDayReport({
         onChange={onMeetingsChange}
         onRetry={onMeetingsRetry}
         saveState={meetingsState}
+      />
+
+      <CountField
+        label="Connections"
+        ariaLabel="daily connections"
+        value={connections}
+        onChange={onConnectionsChange}
+        onRetry={onConnectionsRetry}
+        saveState={connectionsState}
+      />
+
+      <CountField
+        label="Follow-ups sent"
+        ariaLabel="daily follow-ups sent"
+        value={followUpsSent}
+        onChange={onFollowUpsSentChange}
+        onRetry={onFollowUpsSentRetry}
+        saveState={followUpsSentState}
       />
 
       <p className="px-1 text-[11px] text-zinc-500" aria-label="Cortal build activity today">

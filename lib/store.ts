@@ -283,6 +283,8 @@ async function sqlClient() {
     `;
     await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS replies INTEGER NOT NULL DEFAULT 0 CHECK (replies >= 0)`;
     await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS meetings INTEGER NOT NULL DEFAULT 0 CHECK (meetings >= 0)`;
+    await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS connections INTEGER NOT NULL DEFAULT 0 CHECK (connections >= 0)`;
+    await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS follow_ups_sent INTEGER NOT NULL DEFAULT 0 CHECK (follow_ups_sent >= 0)`;
     await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS commits INTEGER NOT NULL DEFAULT 0 CHECK (commits >= 0)`;
     await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS merges INTEGER NOT NULL DEFAULT 0 CHECK (merges >= 0)`;
     await sql`
@@ -363,6 +365,8 @@ function mapLedgerEntry(row: Record<string, unknown>): LedgerEntry {
     featureDone: Boolean(row.feature_done),
     replies: Number(row.replies),
     meetings: Number(row.meetings),
+    connections: Number(row.connections ?? 0),
+    followUpsSent: Number(row.follow_ups_sent ?? 0),
     commits: Number(row.commits),
     merges: Number(row.merges),
   };
@@ -1432,7 +1436,7 @@ export async function getLedgerEntries(
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
-      SELECT to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, commits, merges
+      SELECT to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, commits, merges
       FROM scoreboard_entries WHERE day >= ${fromDay} AND day <= ${toDay} ORDER BY day
     `;
     return result.rows.map(mapLedgerEntry);
@@ -1456,6 +1460,8 @@ export async function setLedgerEntry(
     featureDone?: boolean;
     replies?: number;
     meetings?: number;
+    connections?: number;
+    followUpsSent?: number;
     commits?: number;
     merges?: number;
   },
@@ -1463,17 +1469,19 @@ export async function setLedgerEntry(
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
-      INSERT INTO scoreboard_entries (day, reachouts, feature_done, replies, meetings, commits, merges, updated_at)
-      VALUES (${day}, ${fields.reachouts ?? 0}, ${fields.featureDone ?? false}, ${fields.replies ?? 0}, ${fields.meetings ?? 0}, ${fields.commits ?? 0}, ${fields.merges ?? 0}, now())
+      INSERT INTO scoreboard_entries (day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, commits, merges, updated_at)
+      VALUES (${day}, ${fields.reachouts ?? 0}, ${fields.featureDone ?? false}, ${fields.replies ?? 0}, ${fields.meetings ?? 0}, ${fields.connections ?? 0}, ${fields.followUpsSent ?? 0}, ${fields.commits ?? 0}, ${fields.merges ?? 0}, now())
       ON CONFLICT (day) DO UPDATE SET
         reachouts    = COALESCE(${fields.reachouts ?? null}, scoreboard_entries.reachouts),
         feature_done = COALESCE(${fields.featureDone ?? null}, scoreboard_entries.feature_done),
         replies      = COALESCE(${fields.replies ?? null}, scoreboard_entries.replies),
         meetings     = COALESCE(${fields.meetings ?? null}, scoreboard_entries.meetings),
+        connections  = COALESCE(${fields.connections ?? null}, scoreboard_entries.connections),
+        follow_ups_sent = COALESCE(${fields.followUpsSent ?? null}, scoreboard_entries.follow_ups_sent),
         commits      = COALESCE(${fields.commits ?? null}, scoreboard_entries.commits),
         merges       = COALESCE(${fields.merges ?? null}, scoreboard_entries.merges),
         updated_at   = now()
-      RETURNING to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, commits, merges
+      RETURNING to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, commits, merges
     `;
     return mapLedgerEntry(result.rows[0]);
   }
@@ -1487,6 +1495,8 @@ export async function setLedgerEntry(
       featureDone: fields.featureDone ?? existing?.featureDone ?? false,
       replies: fields.replies ?? existing?.replies ?? 0,
       meetings: fields.meetings ?? existing?.meetings ?? 0,
+      connections: fields.connections ?? existing?.connections ?? 0,
+      followUpsSent: fields.followUpsSent ?? existing?.followUpsSent ?? 0,
       commits: fields.commits ?? existing?.commits ?? 0,
       merges: fields.merges ?? existing?.merges ?? 0,
     };
