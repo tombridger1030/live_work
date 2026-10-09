@@ -25,9 +25,9 @@ type WeeklyRow = {
   weekStart: string;
   label: string;
   weeklyValue: number;
-  reachouts: number;
+  touches: number;
   hours: number;
-  reachoutsTarget: number;
+  touchesTarget: number;
   hoursTarget: number;
 };
 
@@ -84,7 +84,7 @@ export function LedgerCharts({ mode, dailyRows, weeklyRows, selectedDay, reduceM
                     <p className="font-medium text-zinc-100">{week.label}</p>
                     <div className="mt-2 space-y-1 text-zinc-400">
                       <div className="flex justify-between gap-6"><span>Activity score</span><span className="font-mono text-zinc-100">{week.weeklyValue}</span></div>
-                      <div className="flex justify-between gap-6"><span>Messages</span><span className="font-mono text-zinc-100">{week.reachouts}/{week.reachoutsTarget}</span></div>
+                      <div className="flex justify-between gap-6"><span>Touches</span><span className="font-mono text-zinc-100">{week.touches}/{week.touchesTarget}</span></div>
                       <div className="flex justify-between gap-6"><span>Hours</span><span className="font-mono text-zinc-100">{week.hours.toFixed(1)}/{week.hoursTarget}</span></div>
                     </div>
                   </div>
@@ -128,7 +128,7 @@ export function LedgerCharts({ mode, dailyRows, weeklyRows, selectedDay, reduceM
                     <p className="font-medium text-zinc-100">{point.label}</p>
                     <div className="mt-2 space-y-1 text-zinc-400">
                       <div className="flex justify-between gap-6"><span>Activity score</span><span className="font-mono text-zinc-100">{point.dailyValue}</span></div>
-                      <div className="flex justify-between gap-6"><span>7-day avg</span><span className="font-mono text-zinc-100">{point.movingAverage7 ?? "—"}</span></div>
+                      <div className="flex justify-between gap-6"><span>7-day avg</span><span className="font-mono text-zinc-100">{point.movingAverage7 ?? "–"}</span></div>
                     </div>
                   </div>
                 );

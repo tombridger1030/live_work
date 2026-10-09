@@ -1,6 +1,6 @@
 import { isOwnerMutationAuthorized, jsonError } from "@/lib/auth";
 import { revalidateCaptures } from "@/lib/cache";
-import { getLedgerData } from "@/lib/ledger-server";
+import { getDisplayedLedger, getLedgerData } from "@/lib/ledger-server";
 import {
   saveLedgerDayOverride,
   saveLedgerWeekOverride,
@@ -8,7 +8,9 @@ import {
 import { isMirrorHost, readLatestMirror } from "@/lib/mirror";
 import { setLedgerEntry, setWeeklyGoal } from "@/lib/store";
 import { getOptionalEnv } from "@/lib/env";
-import { validateWeeklyGoal } from "@/lib/weekly-goal";
+import { MANUAL_COUNT_FIELDS, MAX_DAILY_COUNT, isDailyCount } from "@/lib/ledger-fields";
+import type { LedgerDayPatch } from "@/lib/ledger";
+import { channelWeeklyGoal, validateWeeklyGoal } from "@/lib/weekly-goal";
 import { isValidDayKey, localDayKey, weekStartForDay } from "@/lib/time";
 
 
@@ -53,31 +55,29 @@ export async function POST(request: Request) {
     // so a request cannot partially update both contracts.
     if (body.weekStart !== undefined) {
       const weekStart = body.weekStart;
-      const weeklyReachouts = body.weeklyReachouts;
+      const weeklyEmails = body.weeklyEmails;
+      const weeklyConnectionRequests = body.weeklyConnectionRequests;
       const weeklyHours = body.weeklyHours;
       const currentMonday = weekStartForDay(localDayKey(new Date()));
-      const validation = validateWeeklyGoal(weekStart, weeklyReachouts, weeklyHours);
+      const validation = validateWeeklyGoal(weekStart, weeklyEmails, weeklyConnectionRequests, weeklyHours);
       if (body.day !== undefined || !validation.ok || typeof weekStart !== "string" || weekStart > currentMonday) {
         return Response.json({ error: !validation.ok ? validation.error : "weekStart must be a displayed Monday week" }, { status: 400 });
       }
-      const displayedLedger = isMirrorHost()
-        ? (await readLatestMirror())?.ledger
-        : await getLedgerData(new Date());
+      const displayedLedger = await getDisplayedLedger();
       const displayed = displayedLedger?.weeks.some((week) => week.weekStart === weekStart) ?? false;
       if (!displayed) {
         return Response.json({ error: "weekStart must be a displayed Monday week" }, { status: 400 });
       }
+      const emails = weeklyEmails as number;
+      const connectionRequests = weeklyConnectionRequests as number;
+      const hours = weeklyHours as number;
       if (isMirrorHost()) {
-        await saveLedgerWeekOverride(weekStart, {
-          reachouts: weeklyReachouts as number,
-          hours: weeklyHours as number,
-        });
+        const { weekStart: _key, ...stored } = channelWeeklyGoal(weekStart, emails, connectionRequests, hours);
+        await saveLedgerWeekOverride(weekStart, stored);
         revalidateCaptures();
-        return Response.json({
-          goal: { weekStart, reachouts: weeklyReachouts, hours: weeklyHours },
-        });
+        return Response.json({ goal: { weekStart, ...stored } });
       }
-      const goal = await setWeeklyGoal(weekStart, weeklyReachouts as number, weeklyHours as number);
+      const goal = await setWeeklyGoal(weekStart, emails, connectionRequests, hours);
       revalidateCaptures();
       return Response.json({ goal });
     }
@@ -92,42 +92,9 @@ export async function POST(request: Request) {
       return Response.json({ error: "cannot log a future day" }, { status: 400 });
     }
 
-    const reachouts = body.reachouts;
-    if (reachouts !== undefined) {
-      if (typeof reachouts !== "number" || !Number.isInteger(reachouts) || reachouts < 0 || reachouts > 1000) {
-        return Response.json({ error: "reachouts must be an integer from 0 to 1000" }, { status: 400 });
-      }
-    }
-
     const featureDone = body.featureDone;
-    if (featureDone !== undefined) {
-      if (typeof featureDone !== "boolean") {
-        return Response.json({ error: "featureDone must be a boolean" }, { status: 400 });
-      }
-    }
-
-    const replies = body.replies;
-    if (replies !== undefined) {
-      if (typeof replies !== "number" || !Number.isInteger(replies) || replies < 0 || replies > 1000) {
-        return Response.json({ error: "replies must be an integer from 0 to 1000" }, { status: 400 });
-      }
-    }
-
-    const meetings = body.meetings;
-    if (meetings !== undefined) {
-      if (typeof meetings !== "number" || !Number.isInteger(meetings) || meetings < 0 || meetings > 1000) {
-        return Response.json({ error: "meetings must be an integer from 0 to 1000" }, { status: 400 });
-      }
-    }
-
-    const connections = body.connections;
-    if (connections !== undefined && (typeof connections !== "number" || !Number.isInteger(connections) || connections < 0 || connections > 1000)) {
-      return Response.json({ error: "connections must be an integer from 0 to 1000" }, { status: 400 });
-    }
-
-    const followUpsSent = body.followUpsSent;
-    if (followUpsSent !== undefined && (typeof followUpsSent !== "number" || !Number.isInteger(followUpsSent) || followUpsSent < 0 || followUpsSent > 1000)) {
-      return Response.json({ error: "followUpsSent must be an integer from 0 to 1000" }, { status: 400 });
+    if (featureDone !== undefined && typeof featureDone !== "boolean") {
+      return Response.json({ error: "featureDone must be a boolean" }, { status: 400 });
     }
 
     // commits/merges are written by the accountability engine from GitHub, never
@@ -137,13 +104,16 @@ export async function POST(request: Request) {
       return Response.json({ error: "commits and merges are server-written and cannot be set here" }, { status: 400 });
     }
 
-    const fields: { reachouts?: number; featureDone?: boolean; replies?: number; meetings?: number; connections?: number; followUpsSent?: number } = {};
-    if (reachouts !== undefined) fields.reachouts = reachouts;
+    const fields: LedgerDayPatch = {};
     if (featureDone !== undefined) fields.featureDone = featureDone;
-    if (replies !== undefined) fields.replies = replies;
-    if (meetings !== undefined) fields.meetings = meetings;
-    if (connections !== undefined) fields.connections = connections;
-    if (followUpsSent !== undefined) fields.followUpsSent = followUpsSent;
+    for (const field of MANUAL_COUNT_FIELDS) {
+      const value = body[field];
+      if (value === undefined) continue;
+      if (!isDailyCount(value)) {
+        return Response.json({ error: `${field} must be an integer from 0 to ${MAX_DAILY_COUNT}` }, { status: 400 });
+      }
+      fields[field] = value;
+    }
 
     if (Object.keys(fields).length === 0) {
       return Response.json({ error: "nothing to update" }, { status: 400 });

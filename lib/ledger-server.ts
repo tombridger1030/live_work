@@ -3,6 +3,7 @@ import { CAPTURES_TAG } from "@/lib/cache";
 import { assembleLedger, dayRange, hoursFromPresent, LEDGER_WEEKS } from "@/lib/ledger";
 import type { LedgerData } from "@/lib/ledger";
 import { refreshCortalActivitySoon } from "@/lib/github-activity";
+import { isMirrorHost, readLatestMirror } from "@/lib/mirror";
 import { daysWithData, getLedgerEntries, getWeeklyGoals, snapshotCountsByDay } from "@/lib/store";
 import { localDayKey, weekStartForDay } from "@/lib/time";
 
@@ -20,7 +21,7 @@ const cachedLedgerData = unstable_cache(loadLedgerData, ["ledger-data"], {
 
 /**
  * Loads the ledger as a recent, Monday-aligned, week-grouped history. The board
- * shows at most `LEDGER_WEEKS` weeks ending with the current week — never a year
+ * shows at most `LEDGER_WEEKS` weeks ending with the current week, never a year
  * of empty cells. `rangeStart` marks the first real day (first data point, or the
  * window start when data is older than the cap); days outside [rangeStart, today]
  * are alignment padding the grid renders blank. The assembled board is cached
@@ -59,4 +60,16 @@ async function loadLedgerData(today: string): Promise<LedgerData> {
   const entries = new Map(entriesList.map((entry) => [entry.day, entry]));
   const hoursByDay = new Map(counts.map((count) => [count.day, hoursFromPresent(count.present)]));
   return assembleLedger(allDays, entries, hoursByDay, today, rangeStart, weeklyGoals);
+}
+
+/**
+ * The ledger this origin displays: on the deployed mirror, the last published
+ * snapshot extended to today with owner edits applied; on the Mac, the live
+ * store. Null only when the mirror has not published a ledger yet. Server-only.
+ */
+export async function getDisplayedLedger(now = new Date()): Promise<LedgerData | null> {
+  if (isMirrorHost()) {
+    return (await readLatestMirror())?.ledger ?? null;
+  }
+  return getLedgerData(now);
 }

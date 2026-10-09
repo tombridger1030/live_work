@@ -13,11 +13,16 @@ function setNodeEnv(value: string | undefined): void {
 const rows = new Map<string, { windowStart: number; hits: number }>();
 let failLedgerMutation = false;
 const queries: string[] = [];
+const ledgerWrites: { query: string; values: unknown[] }[] = [];
 const sql = mock(async (strings: TemplateStringsArray, ...values: unknown[]) => {
   const query = strings.join("?");
   queries.push(query);
   if (failLedgerMutation && query.includes("INSERT INTO scoreboard_entries")) {
     throw new Error("simulated database failure");
+  }
+  if (query.includes("INSERT INTO scoreboard_entries")) {
+    ledgerWrites.push({ query, values });
+    return { rows: [{ day: values[0], reachouts: 0, feature_done: false, replies: 0, meetings: 0, connections: 0, follow_ups_sent: 0, outreach_counts: JSON.parse(String(values[7])), commits: 0, merges: 0 }] };
   }
   if (query.includes("INSERT INTO owner_session_rate_limits")) {
     const key = String(values[0]);
@@ -217,6 +222,49 @@ test("ledger route distinguishes malformed JSON from mutation failures", async (
     expect(await failedMutation.json()).toEqual({ error: "Unable to save ledger change" });
   } finally {
     failLedgerMutation = false;
+    setNodeEnv(previousNodeEnv);
+    if (previousPostgresUrl === undefined) delete process.env.POSTGRES_URL;
+    else process.env.POSTGRES_URL = previousPostgresUrl;
+    if (previousOwnerSecret === undefined) delete process.env.OWNER_SECRET;
+    else process.env.OWNER_SECRET = previousOwnerSecret;
+  }
+});
+
+test("ledger route saves per-channel counts and rejects the retired single-number goal", async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousPostgresUrl = process.env.POSTGRES_URL;
+  const previousOwnerSecret = process.env.OWNER_SECRET;
+  const secret = "ledger-route-owner-secret";
+  try {
+    setNodeEnv("test");
+    process.env.POSTGRES_URL = "mock-postgres";
+    process.env.OWNER_SECRET = secret;
+    const headers = {
+      cookie: `${OWNER_SESSION_COOKIE}=${createOwnerSessionToken(secret)}`,
+      "content-type": "application/json",
+      origin: "https://example.test"
+    };
+    const post = (body: unknown) =>
+      ledgerPost(new Request("https://example.test/api/ledger", { method: "POST", headers, body: JSON.stringify(body) }));
+
+    ledgerWrites.length = 0;
+    const saved = await post({ day: localDayKey(new Date()), emailsSent: 30, linkedinReplies: 2, connections: 4 });
+    expect(saved.status).toBe(200);
+    const write = ledgerWrites[0];
+    // Per-channel counts merge into the JSONB object; `connections` keeps its column.
+    expect(write.query).toContain("outreach_counts = scoreboard_entries.outreach_counts ||");
+    expect(JSON.parse(String(write.values[7]))).toEqual({ emailsSent: 30, linkedinReplies: 2 });
+    expect(write.values[5]).toBe(4);
+    expect((await saved.json()).entry).toMatchObject({ emailsSent: 30, linkedinReplies: 2 });
+
+    const badCount = await post({ day: localDayKey(new Date()), connectionRequests: 12.5 });
+    expect(badCount.status).toBe(400);
+    expect(await badCount.json()).toEqual({ error: "connectionRequests must be an integer from 0 to 1000" });
+
+    const retiredGoal = await post({ weekStart: "2026-10-05", weeklyReachouts: 150, weeklyHours: 55 });
+    expect(retiredGoal.status).toBe(400);
+    expect(await retiredGoal.json()).toEqual({ error: "weeklyEmails must be an integer from 0 to 10000" });
+  } finally {
     setNodeEnv(previousNodeEnv);
     if (previousPostgresUrl === undefined) delete process.env.POSTGRES_URL;
     else process.env.POSTGRES_URL = previousPostgresUrl;

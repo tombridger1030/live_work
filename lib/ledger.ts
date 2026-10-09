@@ -1,5 +1,25 @@
+import {
+  readManualCounts,
+  newTouches,
+  type ManualCounts,
+} from "@/lib/ledger-fields";
+import {
+  buildOutreachFunnel,
+  followUpsDue,
+  splitStartDay,
+  type FollowUpsDue,
+  type OutreachFunnel,
+} from "@/lib/outreach-funnel";
+import {
+  dailyOutreachBar,
+  outreachProgress,
+  outreachTally,
+  type OutreachGoal,
+  type OutreachTally,
+} from "@/lib/outreach-pace";
 import { captureIntervalMinutes, weekStartForDay } from "@/lib/time";
 import type { LedgerEntry, WeeklyGoal } from "@/lib/types";
+import { outreachGoalOf, storedWeeklyGoal } from "@/lib/weekly-goal";
 
 // The Ledger: a recent, week-grouped history (Monday → Sunday) with weekly
 // targets. We only build the weeks that actually contain elapsed days, capped to
@@ -13,32 +33,28 @@ export const WEEKLY_REACHOUT_TARGET = 250;
 export const WEEKLY_HOURS_TARGET = 70;
 
 export type WeeklyTargets = {
-  reachouts: number;
+  outreach: OutreachGoal;
   hours: number;
-};
-
-// One day's share of the goal set for the week that day belongs to. Days are
-// scored against this and never against a module constant, so a goal saved for
-// one week can only ever move that week's own days.
-export type DailyTargets = {
-  reachouts: number;
-  hours: number;
-};
-
-const DEFAULT_WEEKLY_TARGETS: WeeklyTargets = {
-  reachouts: WEEKLY_REACHOUT_TARGET,
-  hours: WEEKLY_HOURS_TARGET,
 };
 
 /**
- * Splits a week's goal evenly across its seven days. Work runs Mon–Sun, so every
- * day carries the same share; there is no weekday/weekend weighting. Single
- * source of the week → day conversion: the day report, the board colors, and the
- * Telegram pace ladder all read the daily bar through here.
+ * One day's bars. `outreach` is that weekday's catch-up share of its own week's
+ * goal (see lib/outreach-pace.ts), and null on Saturday and Sunday: no outreach
+ * is expected, so the day is scored on hours alone. `hours` is the week's hours
+ * goal spread evenly over all seven days.
  */
-export function dailyTargets(weekly: WeeklyTargets): DailyTargets {
-  return { reachouts: weekly.reachouts / 7, hours: weekly.hours / 7 };
-}
+export type DailyTargets = {
+  outreach: OutreachGoal | null;
+  hours: number;
+};
+
+/** Hand-entered fields a day can be patched with: every count, plus the legacy flag. */
+export type LedgerDayPatch = Partial<ManualCounts> & { featureDone?: boolean };
+
+const DEFAULT_WEEKLY_TARGETS: WeeklyTargets = {
+  outreach: { kind: "touches", touches: WEEKLY_REACHOUT_TARGET },
+  hours: WEEKLY_HOURS_TARGET,
+};
 
 const monthDayFormat = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
@@ -56,7 +72,7 @@ const monthFormat = new Intl.DateTimeFormat("en-US", {
 
 export type DayState = "past" | "today" | "future";
 
-export type LedgerDay = {
+export type LedgerDay = ManualCounts & {
   day: string;
   index: number;
   label: string; // "Jun 15"
@@ -66,16 +82,12 @@ export type LedgerDay = {
   monthLabel: string; // "Jun"
   inRange: boolean; // a real elapsed day inside the data window (vs an alignment pad)
   state: DayState;
-  reachouts: number;
   hours: number;
   featureDone: boolean; // Legacy stored data only; never contributes to activity.
-  replies: number;
-  meetings: number;
-  connections: number;
-  followUpsSent: number;
   commits: number;
   merges: number;
   targets: DailyTargets; // this day's share of its own week's goal
+  due: FollowUpsDue | null; // follow-ups this day owes; null on weekends and before the split
   dailyValue: number;
   active: boolean;
 };
@@ -84,19 +96,15 @@ export type LedgerWeek = {
   weekStart: string;
   weekEnd: string;
   label: string;
-  reachouts: number;
+  counts: ManualCounts; // every manual count summed over the week's elapsed days
+  touches: number; // new-prospect touches: unsplit touches + emails + connection requests
   hours: number;
-  replies: number;
-  meetings: number;
   commits: number;
   merges: number;
-  replyRate: number; // replies / reachouts, 0 when no reachouts
-  bookingRate: number; // meetings / replies, 0 when no replies
-  reachoutsPct: number;
+  goal: WeeklyTargets; // the goal this week is measured against
+  outreachPct: number;
   hoursPct: number;
   weeklyValue: number;
-  reachoutsTarget: number;
-  hoursTarget: number;
   days: LedgerDay[];
 };
 
@@ -115,11 +123,12 @@ export type LedgerData = {
     movingAverage7: number | null;
   }[];
   weeklyChart: { weekStart: string; label: string; weeklyValue: number }[];
+  funnel: OutreachFunnel;
   totals: {
     daysElapsed: number;
     activeDays: number;
     activeDayStreak: number;
-    reachoutsSum: number;
+    touchesSum: number;
     hoursSum: number;
   };
 };
@@ -139,26 +148,34 @@ export function hoursFromPresent(present: number): number {
   return Math.round(((present * captureIntervalMinutes) / 60) * 10) / 10;
 }
 
+function hoursProgress(hours: number, target: number): number {
+  return target > 0 ? Math.min(1, hours / target) : 1;
+}
+
 /**
- * Scores activity 0-100: reachouts carry 4/7 and hours 3/7 of the score.
- * Each contribution caps at its target. This does not measure code velocity.
- * `targets` is required: handing in the week's resolved goal is the only way to
- * score a day, which is what keeps a module constant from standing in for a goal
- * the owner actually set. A component target of zero or less counts as already
- * met, so a day is never punished for a bar that cannot be cleared.
+ * Scores a day's activity 0-100 against that day's own bars.
+ *
+ * Weekday: outreach carries 4/7 and hours 3/7, each capped at its bar
+ * (`outreachProgress` caps each channel separately). Weekend (`outreach` is
+ * null): hours alone carry the score, because a weekend outreach bar of zero
+ * would otherwise hand out 4/7 for free. A bar of zero or less on a weekday
+ * means the owner is ahead of pace, so it counts as met. Outputs (accepts,
+ * replies, meetings) never touch the score; this does not measure code velocity.
  */
 export function dailyValue(
-  reachouts: number,
+  tally: OutreachTally,
   hours: number,
   targets: DailyTargets,
 ): number {
-  const reachoutsPct =
-    targets.reachouts > 0 ? Math.min(1, reachouts / targets.reachouts) : 1;
-  const hoursPct = targets.hours > 0 ? Math.min(1, hours / targets.hours) : 1;
+  const hoursPct = hoursProgress(hours, targets.hours);
+  if (targets.outreach === null) {
+    return Math.round(100 * hoursPct);
+  }
   return Math.round(
-    100 * ((reachoutsPct * 4 + hoursPct * 3) / 7),
+    100 * ((outreachProgress(tally, targets.outreach) * 4 + hoursPct * 3) / 7),
   );
 }
+
 /**
  * Resolves the latest effective-dated goal at or before a Monday week start.
  * The default applies until the first saved goal; input order is irrelevant.
@@ -174,28 +191,25 @@ export function resolveWeeklyGoal(
       goal.weekStart <= weekStart &&
       (latestWeekStart === null || goal.weekStart > latestWeekStart)
     ) {
-      resolved = {
-        reachouts: goal.reachouts,
-        hours: goal.hours,
-      };
+      resolved = { outreach: outreachGoalOf(goal), hours: goal.hours };
       latestWeekStart = goal.weekStart;
     }
   }
   return resolved;
 }
 
-/** Returns capped weekly activity progress using the same weights as a day. */
+/** Capped weekly progress, weighted like a weekday (outreach 4/7, hours 3/7). */
 export function weeklyProgress(
-  reachouts: number,
+  tally: OutreachTally,
   hours: number,
   targets: WeeklyTargets = DEFAULT_WEEKLY_TARGETS,
 ) {
-  const reachoutsPct = targets.reachouts > 0 ? Math.min(1, reachouts / targets.reachouts) : 1;
-  const hoursPct = targets.hours > 0 ? Math.min(1, hours / targets.hours) : 1;
+  const outreachPct = outreachProgress(tally, targets.outreach);
+  const hoursPct = hoursProgress(hours, targets.hours);
   return {
-    reachoutsPct,
+    outreachPct,
     hoursPct,
-    weeklyValue: dailyValue(reachouts, hours, targets),
+    weeklyValue: Math.round(100 * ((outreachPct * 4 + hoursPct * 3) / 7)),
   };
 }
 
@@ -221,6 +235,16 @@ export function activeDayStreak(
   return streak;
 }
 
+// A day is active when the owner did something they control: worked hours,
+// touched a new prospect, or followed up. Replies and meetings are outcomes.
+function isActiveDay(counts: ManualCounts, hours: number): boolean {
+  return (
+    hours > 0 ||
+    newTouches(counts) > 0 ||
+    counts.emailFollowUps + counts.linkedinMessages + counts.followUpsSent > 0
+  );
+}
+
 // Weekday average row + board columns both run Monday → Sunday (the user works
 // Mon–Sun, not Sun–Sat).
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -230,6 +254,30 @@ function mondayIndex(utcDay: number): number {
   return (utcDay + 6) % 7;
 }
 
+function addTally(left: OutreachTally, right: OutreachTally): OutreachTally {
+  return {
+    touches: left.touches + right.touches,
+    emails: left.emails + right.emails,
+    connectionRequests: left.connectionRequests + right.connectionRequests,
+  };
+}
+
+const ZERO_TALLY: OutreachTally = {
+  touches: 0,
+  emails: 0,
+  connectionRequests: 0,
+};
+
+/**
+ * Builds the whole ledger from stored facts: day bars, scores, week totals,
+ * charts, streaks, follow-ups due, and the outreach pipeline.
+ *
+ * Preconditions: `days` is ascending and contiguous; `today` and `rangeStart`
+ * are day keys. Days outside [rangeStart, today] are alignment padding and
+ * carry no counts. Postcondition: every derived value comes from this one
+ * function, so the board, the day report, the overlay, and the Telegram ladder
+ * cannot disagree.
+ */
 export function assembleLedger(
   days: string[],
   entries: Map<string, LedgerEntry>,
@@ -241,7 +289,7 @@ export function assembleLedger(
   const startDay = days[0];
   const endDay = days[days.length - 1];
 
-  // One goal lookup per week, reused by that week's day scores and by its own
+  // One goal lookup per week, reused by that week's day bars and by its own
   // totals, so a day can never be scored against a different bar than the week
   // it sits inside. Keyed by real Monday, which is what resolveWeeklyGoal
   // expects and what makes a later week's goal unable to reach backwards.
@@ -257,27 +305,38 @@ export function assembleLedger(
     return resolved;
   };
 
-  const ledgerDays: LedgerDay[] = days.map((day, position) => {
+  // A real elapsed day inside the data window. Days before the first data point
+  // or after today are only alignment padding for the Monday grid.
+  const facts = days.map((day) => {
+    const inRange = day >= rangeStart && day <= today;
+    const entry = inRange ? entries.get(day) : undefined;
+    return { day, inRange, entry, ...readManualCounts(entry ?? {}) };
+  });
+  const splitStart = splitStartDay(facts);
+
+  let loggedEarlier = ZERO_TALLY;
+  let tallyWeek: string | null = null;
+  const ledgerDays: LedgerDay[] = facts.map((fact, position) => {
+    const { day, inRange, entry } = fact;
     const at = new Date(`${day}T12:00:00Z`);
     const state: DayState =
       day < today ? "past" : day === today ? "today" : "future";
-    // A real elapsed day inside the data window. Days before the first data point
-    // or after today are only alignment padding for the Monday grid.
-    const inRange = day >= rangeStart && day <= today;
-    const entry = inRange ? entries.get(day) : undefined;
-    const reachouts = entry?.reachouts ?? 0;
-    const featureDone = entry?.featureDone ?? false;
-    const replies = entry?.replies ?? 0;
-    const meetings = entry?.meetings ?? 0;
-    const connections = entry?.connections ?? 0;
-    const followUpsSent = entry?.followUpsSent ?? 0;
-    const commits = entry?.commits ?? 0;
-    const merges = entry?.merges ?? 0;
+    const weekStart = weekStartForDay(day);
+    if (weekStart !== tallyWeek) {
+      tallyWeek = weekStart;
+      loggedEarlier = ZERO_TALLY;
+    }
+    const counts = readManualCounts(fact);
     const hours = inRange ? (hoursByDay.get(day) ?? 0) : 0;
-    const targets = dailyTargets(weeklyTargetsFor(day));
-    const dv = inRange ? dailyValue(reachouts, hours, targets) : 0;
-    const active = inRange && (reachouts > 0 || hours > 0);
+    const weekly = weeklyTargetsFor(day);
+    const targets: DailyTargets = {
+      outreach: dailyOutreachBar(weekly.outreach, loggedEarlier, day),
+      hours: weekly.hours / 7,
+    };
+    const tally = outreachTally(counts);
+    loggedEarlier = addTally(loggedEarlier, tally);
     return {
+      ...counts,
       day,
       index: position + 1,
       label: monthDayFormat.format(at),
@@ -287,18 +346,14 @@ export function assembleLedger(
       monthLabel: monthFormat.format(at),
       inRange,
       state,
-      reachouts,
       hours,
-      featureDone,
-      replies,
-      meetings,
-      connections,
-      followUpsSent,
-      commits,
-      merges,
+      featureDone: entry?.featureDone ?? false,
+      commits: entry?.commits ?? 0,
+      merges: entry?.merges ?? 0,
       targets,
-      dailyValue: dv,
-      active,
+      due: inRange ? followUpsDue(facts, position, splitStart) : null,
+      dailyValue: inRange ? dailyValue(tally, hours, targets) : 0,
+      active: inRange && isActiveDay(counts, hours),
     };
   });
 
@@ -362,8 +417,8 @@ export function assembleLedger(
   const totals = {
     daysElapsed: elapsedDays.length,
     activeDays: elapsedDays.filter((d) => d.active).length,
-    activeDayStreak: activeDayStreak(ledgerDays.filter((d) => d.inRange)),
-    reachoutsSum: elapsedDays.reduce((sum, d) => sum + d.reachouts, 0),
+    activeDayStreak: activeDayStreak(elapsedDays),
+    touchesSum: elapsedDays.reduce((sum, d) => sum + newTouches(d), 0),
     hoursSum:
       Math.round(elapsedDays.reduce((sum, d) => sum + d.hours, 0) * 10) / 10,
   };
@@ -378,46 +433,87 @@ export function assembleLedger(
     weekdayAverages,
     dailyChart,
     weeklyChart,
+    funnel: buildOutreachFunnel(facts, today),
     totals,
   };
 }
 
-function buildWeek(weekDays: LedgerDay[], targets: WeeklyTargets): LedgerWeek {
+function buildWeek(weekDays: LedgerDay[], goal: WeeklyTargets): LedgerWeek {
   const elapsedDays = weekDays.filter((d) => d.inRange);
-  const reachouts = elapsedDays.reduce((sum, d) => sum + d.reachouts, 0);
+  const counts = readManualCounts({});
+  for (const day of elapsedDays) {
+    for (const field of Object.keys(counts) as (keyof ManualCounts)[]) {
+      counts[field] += day[field];
+    }
+  }
   const hours =
     Math.round(elapsedDays.reduce((sum, d) => sum + d.hours, 0) * 10) / 10;
-  const replies = elapsedDays.reduce((sum, d) => sum + d.replies, 0);
-  const meetings = elapsedDays.reduce((sum, d) => sum + d.meetings, 0);
   const commits = elapsedDays.reduce((sum, d) => sum + d.commits, 0);
   const merges = elapsedDays.reduce((sum, d) => sum + d.merges, 0);
-  // Sell funnel rates: replies per reachout, meetings per reply. Guard the
-  // denominators so a week with no reachouts/replies reads 0, not NaN.
-  const replyRate = reachouts > 0 ? replies / reachouts : 0;
-  const bookingRate = replies > 0 ? meetings / replies : 0;
-  const weekStart = weekDays[0].day;
-  const weekEnd = weekDays[weekDays.length - 1].day;
   const startLabel = weekDays[0].label;
   const endLabel = weekDays[weekDays.length - 1].label;
-  const label = `${startLabel}–${endLabel}`;
-  const progress = weeklyProgress(reachouts, hours, targets);
+  const progress = weeklyProgress(outreachTally(counts), hours, goal);
   return {
-    weekStart,
-    weekEnd,
-    label,
-    reachouts,
+    weekStart: weekDays[0].day,
+    weekEnd: weekDays[weekDays.length - 1].day,
+    label: `${startLabel}–${endLabel}`,
+    counts,
+    touches: newTouches(counts),
     hours,
-    replies,
-    meetings,
     commits,
     merges,
-    replyRate,
-    bookingRate,
-    reachoutsPct: progress.reachoutsPct,
-    hoursPct: progress.hoursPct,
-    weeklyValue: progress.weeklyValue,
-    reachoutsTarget: targets.reachouts,
-    hoursTarget: targets.hours,
+    goal,
+    ...progress,
     days: weekDays,
   };
+}
+
+/** The stored facts of one assembled day, as an entry `assembleLedger` accepts. */
+export function ledgerEntryFromDay(day: LedgerDay): LedgerEntry {
+  return {
+    ...readManualCounts(day),
+    day: day.day,
+    featureDone: day.featureDone,
+    commits: day.commits,
+    merges: day.merges,
+  };
+}
+
+/** The goal each assembled week was measured against, in stored form. */
+export function ledgerWeeklyGoals(data: LedgerData): WeeklyGoal[] {
+  return data.weeks.map((week) =>
+    storedWeeklyGoal(week.weekStart, week.goal.outreach, week.goal.hours),
+  );
+}
+
+/**
+ * Rebuilds a ledger from its own stored facts plus per-day patches, through
+ * `assembleLedger`. The deployed overlay and the day report's unsaved drafts
+ * both use this one path, so a draft and a saved value can never score
+ * differently. Patches for days outside the data window are ignored; capture
+ * fields (hours, commits, merges) cannot be patched. Input is not mutated.
+ */
+export function reassembleLedger(
+  data: LedgerData,
+  patches: Record<string, LedgerDayPatch> = {},
+  goals: WeeklyGoal[] = ledgerWeeklyGoals(data),
+): LedgerData {
+  const entries = new Map<string, LedgerEntry>();
+  const hoursByDay = new Map<string, number>();
+  for (const day of data.days) {
+    if (!day.inRange) {
+      continue;
+    }
+    entries.set(day.day, { ...ledgerEntryFromDay(day), ...patches[day.day] });
+    hoursByDay.set(day.day, day.hours);
+  }
+  const rangeStart = data.days.find((day) => day.inRange)?.day ?? data.today;
+  return assembleLedger(
+    data.days.map((day) => day.day),
+    entries,
+    hoursByDay,
+    data.today,
+    rangeStart,
+    goals,
+  );
 }

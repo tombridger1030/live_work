@@ -1,13 +1,7 @@
+import { newTouches } from "@/lib/ledger-fields";
 import type { LedgerDay } from "@/lib/ledger";
 
 export type ProgressState = "behind" | "on pace" | "done";
-
-export function clampReachouts(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  return Math.min(1000, Math.max(0, Math.round(value)));
-}
 
 export function progressState(value: number, target: number): ProgressState {
   if (target <= 0) {
@@ -50,5 +44,5 @@ export function ledgerDayAriaLabel(day: LedgerDay): string {
     return `${day.weekdayLabel} ${day.label}, future day`;
   }
 
-  return `${day.weekdayLabel} ${day.label}: ${day.dailyValue} activity points, ${day.reachouts} reachouts, ${day.hours.toFixed(1)} hours`;
+  return `${day.weekdayLabel} ${day.label}: ${day.dailyValue} activity points, ${newTouches(day)} touches, ${day.hours.toFixed(1)} hours`;
 }

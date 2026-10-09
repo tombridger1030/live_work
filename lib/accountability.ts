@@ -1,18 +1,25 @@
 import OpenAI from "openai";
 import { getOptionalEnv } from "@/lib/env";
 import { syncCortalActivity } from "@/lib/github-activity";
-import { dailyTargets, resolveWeeklyGoal } from "@/lib/ledger";
+import { getDisplayedLedger } from "@/lib/ledger-server";
+import {
+  outreachBarTotal,
+  outreachDone,
+  outreachTally,
+} from "@/lib/outreach-pace";
 import {
   appendNudgeMessage,
-  getLedgerEntries,
   getSettings,
-  getWeeklyGoals,
   latestSnapshot,
   setNudgeState,
 } from "@/lib/store";
 import { sendTelegram } from "@/lib/telegram";
-import { appTimeZone, localDayKey, weekStartForDay } from "@/lib/time";
-import { captureFreshnessForMirror, captureHealthForMirror, readLatestMirror } from "@/lib/mirror";
+import { appTimeZone, localDayKey } from "@/lib/time";
+import {
+  captureFreshnessForMirror,
+  captureHealthForMirror,
+  readLatestMirror,
+} from "@/lib/mirror";
 import { captureMonitorAction } from "@/lib/capture-health";
 import type { NudgeState } from "@/lib/types";
 
@@ -28,8 +35,8 @@ export const CHECKPOINTS = [
 ] as const;
 
 /**
- * The reachout count a checkpoint demands, given today's bar (this week's goal
- * divided across seven days). Rounds to whole messages so the nudge asks for
+ * The outreach count a checkpoint demands, given today's catch-up bar (see
+ * lib/outreach-pace.ts). Rounds to whole messages so the nudge asks for
  * something sendable, and the 20:00 checkpoint lands exactly on the same number
  * the day report shows. Returns 0 when the bar rounds away, which reads as "no
  * checkpoint to miss" at the call site.
@@ -63,7 +70,7 @@ export const SNOOZE_SYSTEM_PROMPT =
   'Reply ONLY JSON {"action":"grant"|"challenge","minutes":<int 0-240>,"message":"<short reply to send>"}. ' +
   'GRANT a realistic pause for a plausible activity at this time (lunch~30, gym~90, jiu jitsu/jj~120, errand~20; honor an explicit duration like "2h"). ' +
   "CHALLENGE with minutes:0 and a brief skeptical push-back when ANY of these hold: " +
-  '(1) the activity does not fit the clock — a meal outside its window is implausible: lunch fits ~11:00-14:00, breakfast ~06:00-10:00, dinner ~17:00-21:00, so e.g. "lunch" at 15:00 MUST be challenged; ' +
+  '(1) the activity does not fit the clock: a meal outside its window is implausible: lunch fits ~11:00-14:00, breakfast ~06:00-10:00, dinner ~17:00-21:00, so e.g. "lunch" at 15:00 MUST be challenged; ' +
   "(2) the message is vague or unparseable (e.g. random letters, no real activity); " +
   "(3) they have already been muted a lot today (roughly 180+ minutes). Never exceed 240.";
 
@@ -276,19 +283,31 @@ async function monitorCapture(state: NudgeState, now: Date): Promise<void> {
       await appendNudgeMessage({ direction: "out", kind, text });
       return true;
     } catch (error) {
-      console.warn(`[work-live] capture alert send failed (${kind}):`, (error as Error).message);
+      console.warn(
+        `[work-live] capture alert send failed (${kind}):`,
+        (error as Error).message,
+      );
       return false;
     }
   };
 
   const action = captureMonitorAction(health, freshness, state.captureIncident);
   if (action.kind === "failure") {
-    const age = action.ageMinutes === null ? "never" : `${action.ageMinutes}m ago`;
-    if (await send("capture-failure", `🚨 Tally capture alert: ${freshness.reason ?? "stale capture"}; last image ${age}.`)) {
+    const age =
+      action.ageMinutes === null ? "never" : `${action.ageMinutes}m ago`;
+    if (
+      await send(
+        "capture-failure",
+        `🚨 Tally capture alert: ${freshness.reason ?? "stale capture"}; last image ${age}.`,
+      )
+    ) {
       state.captureIncident = { key: action.key, startedAt: now.toISOString() };
     }
   } else if (action.kind === "recovery") {
-    const recovered = await send("capture-recovery", "✅ Tally capture recovered; a new image is arriving again.");
+    const recovered = await send(
+      "capture-recovery",
+      "✅ Tally capture recovered; a new image is arriving again.",
+    );
     if (recovered) state.captureIncident = null;
   }
 }
@@ -349,16 +368,22 @@ export async function evaluateAndNudge(now: Date = new Date()): Promise<void> {
 
   // A recent landed commit suppresses only the away nudge. A failed or absent
   // GitHub connection leaves this null without interrupting the rest of the sweep.
-  const lastCommitAt = activity && activity.commits > 0 ? activity.lastCommitAt : null;
+  const lastCommitAt =
+    activity && activity.commits > 0 ? activity.lastCommitAt : null;
 
-  const reachouts = (await getLedgerEntries(today, today))[0]?.reachouts ?? 0;
-
-  // Pace against the goal in force for the week today sits in, resolved the same
-  // way the board resolves it. A goal saved for a later week cannot move today's
-  // ladder, so raising next week's bar never makes today read as behind.
-  const dailyReachoutTarget = dailyTargets(
-    resolveWeeklyGoal(weekStartForDay(today), await getWeeklyGoals()),
-  ).reachouts;
+  // Pace against the same assembled ledger the board shows (the deployed
+  // overlay included), so a nudge can never disagree with the day report.
+  // Saturday and Sunday carry no outreach bar, so no checkpoint fires then.
+  const ledger = await getDisplayedLedger(now);
+  const todayRow = ledger?.days.find((day) => day.day === today) ?? null;
+  const outreachBar = todayRow?.targets.outreach ?? null;
+  const dailyOutreachTarget = outreachBar
+    ? outreachBarTotal(outreachBar)
+    : null;
+  const outreachSent =
+    todayRow && outreachBar
+      ? outreachDone(outreachTally(todayRow), outreachBar)
+      : 0;
 
   // Fire a nudge: send + log, marking sent only when BOTH succeed so a transient
   // Telegram failure re-fires next cycle instead of being silently dropped.
@@ -410,17 +435,20 @@ export async function evaluateAndNudge(now: Date = new Date()): Promise<void> {
 
   // Outreach checkpoints: behind the pace target at this time, once each.
   for (const checkpoint of CHECKPOINTS) {
-    const target = checkpointTarget(checkpoint.share, dailyReachoutTarget);
+    if (dailyOutreachTarget === null) {
+      break;
+    }
+    const target = checkpointTarget(checkpoint.share, dailyOutreachTarget);
     if (
       minutesOfDay >= hmToMinutes(checkpoint.at) &&
-      reachouts < target &&
+      outreachSent < target &&
       !state.checkpointsSent[checkpoint.at]
     ) {
-      const remaining = target - reachouts;
+      const remaining = target - outreachSent;
       if (
         await fire(
           "checkpoint",
-          `📤 Outreach ${reachouts}/${target} by ${checkpoint.at}: send ${remaining}.`,
+          `📤 Outreach ${outreachSent}/${target} by ${checkpoint.at}: send ${remaining}.`,
         )
       ) {
         state.checkpointsSent[checkpoint.at] = true;

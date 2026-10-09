@@ -1,33 +1,54 @@
 import { expect, test } from "bun:test";
 import {
   assembleLedger,
-  dailyTargets,
   dailyValue,
   weeklyProgress,
   hoursFromPresent,
   dayRange,
   activeDayStreak,
+  reassembleLedger,
   resolveWeeklyGoal,
   WEEKLY_REACHOUT_TARGET,
   WEEKLY_HOURS_TARGET,
+  type DailyTargets,
 } from "@/lib/ledger";
+import type { OutreachTally } from "@/lib/outreach-pace";
 import type { LedgerEntry, WeeklyGoal } from "@/lib/types";
 
-// The bar a week of 250 messages / 70 hours implies for one day.
-const DEFAULT_DAILY = dailyTargets({
-  reachouts: WEEKLY_REACHOUT_TARGET,
-  hours: WEEKLY_HOURS_TARGET,
+const touches = (count: number): OutreachTally => ({
+  touches: count,
+  emails: 0,
+  connectionRequests: 0,
 });
+
+// A weekday bar of 50 touches and 10 hours.
+const WEEKDAY: DailyTargets = {
+  outreach: { kind: "touches", touches: 50 },
+  hours: 10,
+};
+
+function entry(day: string, fields: Partial<LedgerEntry> = {}): LedgerEntry {
+  return { day, featureDone: false, commits: 0, merges: 0, ...fields };
+}
 
 test("legacy feature flags survive without affecting activity, charts, or streaks", () => {
   const days = dayRange("2026-08-03", "2026-08-09");
-  const build = (featureDone: boolean) => assembleLedger(days, new Map(days.map((day) => [day, {
-    day, featureDone, reachouts: 0, replies: 0, meetings: 0, commits: 0, merges: 0,
-  }])), new Map(), days[6], days[0]);
+  const build = (featureDone: boolean) =>
+    assembleLedger(
+      days,
+      new Map(
+        days.map((day) => [day, entry(day, { featureDone, reachouts: 0 })]),
+      ),
+      new Map(),
+      days[6],
+      days[0],
+    );
   const legacy = build(true);
   const empty = build(false);
   expect(legacy.days.every((day) => day.featureDone)).toBe(true);
-  expect(legacy.days.every((day) => day.dailyValue === 0 && !day.active)).toBe(true);
+  expect(legacy.days.every((day) => day.dailyValue === 0 && !day.active)).toBe(
+    true,
+  );
   expect(legacy.totals).toEqual(empty.totals);
   expect(legacy.totals.activeDayStreak).toBe(0);
   expect(legacy.dailyChart).toEqual(empty.dailyChart);
@@ -35,14 +56,21 @@ test("legacy feature flags survive without affecting activity, charts, or streak
   expect(legacy.weekdayAverages).toEqual(empty.weekdayAverages);
 });
 
-test("weekly activity uses the daily contract including independently capped targets", () => {
-  expect(weeklyProgress(250, 0).weeklyValue).toBe(57);
-  expect(weeklyProgress(0, 70).weeklyValue).toBe(43);
-  expect(weeklyProgress(125, 35).weeklyValue).toBe(50);
-  expect(weeklyProgress(250000, 0).weeklyValue).toBe(57);
-  expect(weeklyProgress(250, 70).weeklyValue).toBe(100);
-  expect(weeklyProgress(0, 0, { reachouts: 0, hours: 0 })).toEqual({
-    reachoutsPct: 1, hoursPct: 1, weeklyValue: 100,
+test("weekly activity weights outreach 4/7 and hours 3/7 with independent caps", () => {
+  expect(weeklyProgress(touches(250), 0).weeklyValue).toBe(57);
+  expect(weeklyProgress(touches(0), 70).weeklyValue).toBe(43);
+  expect(weeklyProgress(touches(125), 35).weeklyValue).toBe(50);
+  expect(weeklyProgress(touches(250000), 0).weeklyValue).toBe(57);
+  expect(weeklyProgress(touches(250), 70).weeklyValue).toBe(100);
+  expect(
+    weeklyProgress(touches(0), 0, {
+      outreach: { kind: "touches", touches: 0 },
+      hours: 0,
+    }),
+  ).toEqual({
+    outreachPct: 1,
+    hoursPct: 1,
+    weeklyValue: 100,
   });
 });
 
@@ -62,88 +90,113 @@ test("hoursFromPresent converts present snapshots to hours", () => {
   expect(hoursFromPresent(6)).toBe(0.5);
 });
 
-test("activity weights reachouts 4/7 and hours 3/7, with independent caps", () => {
-  expect(dailyValue(0, 0, DEFAULT_DAILY)).toBe(0);
-  expect(dailyValue(DEFAULT_DAILY.reachouts, 0, DEFAULT_DAILY)).toBe(57);
-  expect(dailyValue(0, DEFAULT_DAILY.hours, DEFAULT_DAILY)).toBe(43);
-  expect(dailyValue(DEFAULT_DAILY.reachouts, DEFAULT_DAILY.hours, DEFAULT_DAILY)).toBe(100);
-  expect(dailyValue(DEFAULT_DAILY.reachouts * 1000, 0, DEFAULT_DAILY)).toBe(57);
-  expect(dailyValue(0, DEFAULT_DAILY.hours * 1000, DEFAULT_DAILY)).toBe(43);
-  expect(dailyValue(DEFAULT_DAILY.reachouts / 2, DEFAULT_DAILY.hours / 2, DEFAULT_DAILY)).toBe(50);
+test("a weekday weights outreach 4/7 and hours 3/7, with independent caps", () => {
+  expect(dailyValue(touches(0), 0, WEEKDAY)).toBe(0);
+  expect(dailyValue(touches(50), 0, WEEKDAY)).toBe(57);
+  expect(dailyValue(touches(0), 10, WEEKDAY)).toBe(43);
+  expect(dailyValue(touches(50), 10, WEEKDAY)).toBe(100);
+  expect(dailyValue(touches(50000), 0, WEEKDAY)).toBe(57);
+  expect(dailyValue(touches(0), 10000, WEEKDAY)).toBe(43);
+  expect(dailyValue(touches(25), 5, WEEKDAY)).toBe(50);
+});
+
+test("a weekend is scored on hours alone, never on a free outreach share", () => {
+  const weekend: DailyTargets = { outreach: null, hours: 10 };
+  expect(dailyValue(touches(0), 0, weekend)).toBe(0);
+  expect(dailyValue(touches(0), 5, weekend)).toBe(50);
+  expect(dailyValue(touches(40), 10, weekend)).toBe(100);
+});
+
+test("the reported week: 150 goal, 42 sent Mon-Wed, Thursday asks for 54", () => {
+  const days = dayRange("2026-10-05", "2026-10-11");
+  const entries = new Map<string, LedgerEntry>([
+    ["2026-10-05", entry("2026-10-05", { reachouts: 22 })],
+    ["2026-10-06", entry("2026-10-06", { reachouts: 20 })],
+    ["2026-10-08", entry("2026-10-08", { reachouts: 12 })],
+  ]);
+  const goals: WeeklyGoal[] = [
+    { weekStart: "2026-10-05", reachouts: 150, hours: 55 },
+  ];
+  const data = assembleLedger(
+    days,
+    entries,
+    new Map(),
+    "2026-10-09",
+    "2026-10-05",
+    goals,
+  );
+  const bars = data.days.map((day) => day.targets.outreach);
+  expect(bars).toEqual([
+    { kind: "touches", touches: 30 }, // Monday: 150 / 5
+    { kind: "touches", touches: 32 }, // 128 left / 4
+    { kind: "touches", touches: 36 }, // 108 left / 3
+    { kind: "touches", touches: 54 }, // 108 left / 2: the number the owner expected
+    { kind: "touches", touches: 96 }, // Friday inherits whatever Thursday left
+    null,
+    null,
+  ]);
+  expect(data.weeks[0].touches).toBe(54);
+});
+
+test("a channel week paces emails and requests separately; unsplit touches do not count toward them", () => {
+  const days = dayRange("2026-10-12", "2026-10-18");
+  const entries = new Map<string, LedgerEntry>([
+    [
+      "2026-10-12",
+      entry("2026-10-12", {
+        emailsSent: 20,
+        connectionRequests: 4,
+        reachouts: 30,
+      }),
+    ],
+  ]);
+  const goals: WeeklyGoal[] = [
+    {
+      weekStart: "2026-10-12",
+      reachouts: 150,
+      hours: 55,
+      emails: 100,
+      connectionRequests: 50,
+    },
+  ];
+  const data = assembleLedger(
+    days,
+    entries,
+    new Map([["2026-10-12", 55 / 7]]),
+    "2026-10-13",
+    "2026-10-12",
+    goals,
+  );
+  const [monday, tuesday] = data.days;
+  expect(monday.targets.outreach).toEqual({
+    kind: "channels",
+    emails: 20,
+    connectionRequests: 10,
+  });
+  expect(tuesday.targets.outreach).toEqual({
+    kind: "channels",
+    emails: 20,
+    connectionRequests: 12,
+  });
+  // Emails met (20/20), requests 4/10: (20 + 4) / 30 of the outreach share, full hours.
+  expect(monday.dailyValue).toBe(Math.round(100 * (((24 / 30) * 4 + 3) / 7)));
+  expect(data.weeks[0].goal.outreach).toEqual({
+    kind: "channels",
+    emails: 100,
+    connectionRequests: 50,
+  });
 });
 
 test("assembleLedger aggregates Monday-through-Sunday weekly goals", () => {
-  // 2026-06-22 is a Monday; build one full Monday→Sunday week.
   const days = dayRange("2026-06-22", "2026-06-28");
   const entries = new Map<string, LedgerEntry>();
-  // Fill with exact values that sum to weekly targets (250 reachouts, 70 hours)
-  entries.set(days[0], {
-    day: days[0],
-    reachouts: 35,
-    featureDone: true,
-    replies: 0,
-    meetings: 0,
-    commits: 0,
-    merges: 0,
-  });
-  entries.set(days[1], {
-    day: days[1],
-    reachouts: 35,
-    featureDone: true,
-    replies: 0,
-    meetings: 0,
-    commits: 0,
-    merges: 0,
-  });
-  entries.set(days[2], {
-    day: days[2],
-    reachouts: 36,
-    featureDone: true,
-    replies: 0,
-    meetings: 0,
-    commits: 0,
-    merges: 0,
-  });
-  entries.set(days[3], {
-    day: days[3],
-    reachouts: 36,
-    featureDone: true,
-    replies: 0,
-    meetings: 0,
-    commits: 0,
-    merges: 0,
-  });
-  entries.set(days[4], {
-    day: days[4],
-    reachouts: 36,
-    featureDone: true,
-    replies: 0,
-    meetings: 0,
-    commits: 0,
-    merges: 0,
-  });
-  entries.set(days[5], {
-    day: days[5],
-    reachouts: 36,
-    featureDone: true,
-    replies: 0,
-    meetings: 0,
-    commits: 0,
-    merges: 0,
-  });
-  entries.set(days[6], {
-    day: days[6],
-    reachouts: 36,
-    featureDone: true,
-    replies: 0,
-    meetings: 0,
-    commits: 0,
-    merges: 0,
-  });
-  const hoursByDay = new Map<string, number>();
-  for (const day of days) {
-    hoursByDay.set(day, 10);
-  }
+  [35, 35, 36, 36, 36, 36, 36].forEach((reachouts, index) =>
+    entries.set(
+      days[index],
+      entry(days[index], { reachouts, featureDone: true }),
+    ),
+  );
+  const hoursByDay = new Map(days.map((day) => [day, 10]));
   const data = assembleLedger(
     days,
     entries,
@@ -153,9 +206,9 @@ test("assembleLedger aggregates Monday-through-Sunday weekly goals", () => {
   );
   expect(data.weeks.length).toBe(1);
   const week = data.weeks[0];
-  expect(week.reachouts).toBe(WEEKLY_REACHOUT_TARGET);
+  expect(week.touches).toBe(WEEKLY_REACHOUT_TARGET);
   expect(week.hours).toBe(WEEKLY_HOURS_TARGET);
-  expect(week.reachoutsPct).toBe(1);
+  expect(week.outreachPct).toBe(1);
   expect(week.hoursPct).toBe(1);
   expect(week.weeklyValue).toBe(100);
   // Board columns run Monday → Sunday.
@@ -165,43 +218,28 @@ test("assembleLedger aggregates Monday-through-Sunday weekly goals", () => {
 
 test("weekly targets stay historical while unsaved gaps inherit the latest earlier goal", () => {
   const days = dayRange("2026-06-22", "2026-07-12");
-  const entries = new Map<string, LedgerEntry>();
+  const entries = new Map<string, LedgerEntry>(
+    days.map((day) => [day, entry(day, { reachouts: 0 })]),
+  );
   const hoursByDay = new Map<string, number>();
-  for (const day of days) {
-    entries.set(day, {
-      day,
-      reachouts: 0,
-      featureDone: false,
-      replies: 0,
-      meetings: 0,
-      commits: 0,
-      merges: 0,
-    });
-  }
-  for (const [day, reachouts, hours] of [
-    ["2026-06-24", 100, 40 / 7],
-    ["2026-07-01", 125, 50 / 7],
-    ["2026-07-08", 200, 80 / 7],
-  ] as const) {
-    entries.set(day, { ...entries.get(day)!, reachouts });
-    const weekStart =
-      day === "2026-06-24"
-        ? "2026-06-22"
-        : day === "2026-07-01"
-          ? "2026-06-29"
-          : "2026-07-06";
-    for (const weekDay of dayRange(
-      weekStart,
-      `${weekStart === "2026-06-22" ? "2026-06-28" : weekStart === "2026-06-29" ? "2026-07-05" : "2026-07-12"}`,
-    )) {
-      hoursByDay.set(weekDay, hours);
+  const weekly: [string, string, number, number][] = [
+    ["2026-06-22", "2026-06-24", 100, 40],
+    ["2026-06-29", "2026-07-01", 125, 50],
+    ["2026-07-06", "2026-07-08", 200, 80],
+  ];
+  for (const [weekStart, day, reachouts, hours] of weekly) {
+    entries.set(day, entry(day, { reachouts }));
+    for (const weekDay of days
+      .filter((candidate) => candidate >= weekStart)
+      .slice(0, 7)) {
+      hoursByDay.set(weekDay, hours / 7);
     }
   }
-  const goals: WeeklyGoal[] = [
-    { weekStart: "2026-06-22", reachouts: 100, hours: 40 },
-    { weekStart: "2026-06-29", reachouts: 125, hours: 50 },
-    { weekStart: "2026-07-06", reachouts: 200, hours: 80 },
-  ];
+  const goals: WeeklyGoal[] = weekly.map(([weekStart, , reachouts, hours]) => ({
+    weekStart,
+    reachouts,
+    hours,
+  }));
   const data = assembleLedger(
     days,
     entries,
@@ -212,23 +250,18 @@ test("weekly targets stay historical while unsaved gaps inherit the latest earli
   );
 
   expect(
-    data.weeks.map((week) => [
-      week.reachoutsTarget,
-      week.hoursTarget,
-      week.reachoutsPct,
-      week.hoursPct,
-    ]),
+    data.weeks.map((week) => [week.goal, week.outreachPct, week.hoursPct]),
   ).toEqual([
-    [100, 40, 1, 1],
-    [125, 50, 1, 1],
-    [200, 80, 1, 1],
+    [{ outreach: { kind: "touches", touches: 100 }, hours: 40 }, 1, 1],
+    [{ outreach: { kind: "touches", touches: 125 }, hours: 50 }, 1, 1],
+    [{ outreach: { kind: "touches", touches: 200 }, hours: 80 }, 1, 1],
   ]);
   expect(resolveWeeklyGoal("2026-07-13", [goals[2], goals[0]])).toEqual({
-    reachouts: 200,
+    outreach: { kind: "touches", touches: 200 },
     hours: 80,
   });
   expect(resolveWeeklyGoal("2026-07-01", [goals[2], goals[0]])).toEqual({
-    reachouts: 100,
+    outreach: { kind: "touches", touches: 100 },
     hours: 40,
   });
 });
@@ -236,24 +269,12 @@ test("weekly targets stay historical while unsaved gaps inherit the latest earli
 test("assembleLedger keeps raw goals visible while using dailyValue for color/trends", () => {
   const days = ["2026-06-24"];
   const entries = new Map<string, LedgerEntry>([
-    [
-      "2026-06-24",
-      {
-        day: "2026-06-24",
-        reachouts: 50,
-        featureDone: true,
-        replies: 0,
-        meetings: 0,
-        commits: 0,
-        merges: 0,
-      },
-    ],
+    ["2026-06-24", entry("2026-06-24", { reachouts: 50, featureDone: true })],
   ]);
-  const hoursByDay = new Map<string, number>([["2026-06-24", 10]]);
   const data = assembleLedger(
     days,
     entries,
-    hoursByDay,
+    new Map([["2026-06-24", 10]]),
     "2026-06-24",
     "2026-06-24",
   );
@@ -264,7 +285,6 @@ test("assembleLedger keeps raw goals visible while using dailyValue for color/tr
 });
 
 test("activeDayStreak skips an inactive today but breaks on inactive past days", () => {
-  // Streak of 3 active days, today inactive - today is skipped, counts backwards from yesterday
   expect(
     activeDayStreak([
       { state: "past", active: true },
@@ -273,7 +293,6 @@ test("activeDayStreak skips an inactive today but breaks on inactive past days",
       { state: "today", active: false },
     ]),
   ).toBe(3);
-  // An in-progress today is skipped, not counted as a break.
   expect(
     activeDayStreak([
       { state: "past", active: true },
@@ -281,7 +300,6 @@ test("activeDayStreak skips an inactive today but breaks on inactive past days",
       { state: "today", active: false },
     ]),
   ).toBe(2);
-  // A past gap breaks the streak - counts backwards: today(active) + past(active) = 2, then hits gap
   expect(
     activeDayStreak([
       { state: "past", active: true },
@@ -290,7 +308,6 @@ test("activeDayStreak skips an inactive today but breaks on inactive past days",
       { state: "today", active: true },
     ]),
   ).toBe(2);
-  // Future days are ignored entirely - streak of 3 past days
   expect(
     activeDayStreak([
       { state: "past", active: true },
@@ -299,7 +316,6 @@ test("activeDayStreak skips an inactive today but breaks on inactive past days",
       { state: "future", active: false },
     ]),
   ).toBe(3);
-  // No active days
   expect(
     activeDayStreak([
       { state: "past", active: false },
@@ -309,50 +325,119 @@ test("activeDayStreak skips an inactive today but breaks on inactive past days",
 });
 
 test("a day is scored against its own week's goal, not a built-in default", () => {
-  // The reported bug: with a 100-message / 50-hour week saved, the day panel
-  // still showed the 250/70 defaults (36 messages, 10.0 hours).
+  // With a 100-touch / 50-hour week saved, Monday asks for 100 / 5 = 20, never
+  // the 250-touch default's 50.
   const days = dayRange("2026-08-03", "2026-08-09");
   const entries = new Map<string, LedgerEntry>([
-    ["2026-08-03", { day: "2026-08-03", reachouts: 15, featureDone: false, replies: 0, meetings: 0, commits: 0, merges: 0 }]
+    ["2026-08-03", entry("2026-08-03", { reachouts: 20 })],
   ]);
-  const hoursByDay = new Map<string, number>([["2026-08-03", 50 / 7]]);
-  const goals: WeeklyGoal[] = [{ weekStart: "2026-08-03", reachouts: 100, hours: 50 }];
-  const data = assembleLedger(days, entries, hoursByDay, "2026-08-03", "2026-08-03", goals);
-
+  const goals: WeeklyGoal[] = [
+    { weekStart: "2026-08-03", reachouts: 100, hours: 50 },
+  ];
+  const data = assembleLedger(
+    days,
+    entries,
+    new Map([["2026-08-03", 50 / 7]]),
+    "2026-08-03",
+    "2026-08-03",
+    goals,
+  );
   const monday = data.days[0];
-  expect(monday.targets.reachouts).toBeCloseTo(100 / 7, 10); // shows as "/ 14", never "/ 36"
-  expect(monday.targets.hours).toBeCloseTo(50 / 7, 10); // shows as "/ 7.1", never "/ 10.0"
-  // 15 messages clears a 14.3 bar, so the activity targets are both met.
+  expect(monday.targets.outreach).toEqual({ kind: "touches", touches: 20 });
+  expect(monday.targets.hours).toBeCloseTo(50 / 7, 10);
   expect(monday.dailyValue).toBe(100);
 });
 
+test("hitting every weekday bar and the hours bar scores every day 100", () => {
+  const days = dayRange("2026-07-27", "2026-08-02");
+  const goals: WeeklyGoal[] = [
+    { weekStart: "2026-07-27", reachouts: 70, hours: 35 },
+  ];
+  const hoursByDay = new Map(days.map((day) => [day, 5]));
+  // Monday's bar is 14; logging it exactly keeps every later bar at 14.
+  const entries = new Map<string, LedgerEntry>(
+    days.slice(0, 5).map((day) => [day, entry(day, { reachouts: 14 })]),
+  );
+  const data = assembleLedger(
+    days,
+    entries,
+    hoursByDay,
+    "2026-08-02",
+    "2026-07-27",
+    goals,
+  );
+  expect(
+    data.days.map((day) =>
+      day.targets.outreach?.kind === "touches"
+        ? day.targets.outreach.touches
+        : null,
+    ),
+  ).toEqual([14, 14, 14, 14, 14, null, null]);
+  expect(data.days.map((day) => day.dailyValue)).toEqual(
+    new Array(7).fill(100),
+  );
+});
+
 test("a later week's goal cannot move an earlier week's day or week scores", () => {
-  // Raising next week's bar must not re-score the week already worked, or
-  // week-over-week improvement measures nothing.
-  const days = dayRange("2026-07-27", "2026-08-09"); // two full Mon-Sun weeks
+  const days = dayRange("2026-07-27", "2026-08-09");
   const entries = new Map<string, LedgerEntry>();
   const hoursByDay = new Map<string, number>();
   for (const day of days) {
-    entries.set(day, { day, reachouts: 10, featureDone: false, replies: 0, meetings: 0, commits: 0, merges: 0 });
+    entries.set(day, entry(day, { reachouts: 10 }));
     hoursByDay.set(day, 5);
   }
   const goals: WeeklyGoal[] = [
-    { weekStart: "2026-07-27", reachouts: 70, hours: 35 }, // daily bar 10 messages / 5h
-    { weekStart: "2026-08-03", reachouts: 140, hours: 70 } // daily bar 20 messages / 10h
+    { weekStart: "2026-07-27", reachouts: 70, hours: 35 },
+    { weekStart: "2026-08-03", reachouts: 140, hours: 70 },
   ];
-  const before = assembleLedger(days, entries, hoursByDay, "2026-08-09", "2026-07-27", goals);
-
-  // Same logged work, different bar per week: at bar = 100, at half bar = 50.
-  expect(before.weeks[0].days.map((day) => day.dailyValue)).toEqual(new Array(7).fill(100));
-  expect(before.weeks[1].days.map((day) => day.dailyValue)).toEqual(new Array(7).fill(50));
-
-  // Now set a far higher goal for the FOLLOWING week and re-assemble.
-  const after = assembleLedger(days, entries, hoursByDay, "2026-08-09", "2026-07-27", [
-    ...goals,
-    { weekStart: "2026-08-10", reachouts: 1000, hours: 140 }
-  ]);
-  expect(after.days.map((day) => day.dailyValue)).toEqual(before.days.map((day) => day.dailyValue));
-  expect(after.weeks.map((week) => [week.reachoutsTarget, week.hoursTarget, week.weeklyValue])).toEqual(
-    before.weeks.map((week) => [week.reachoutsTarget, week.hoursTarget, week.weeklyValue])
+  const before = assembleLedger(
+    days,
+    entries,
+    hoursByDay,
+    "2026-08-09",
+    "2026-07-27",
+    goals,
   );
+  const after = assembleLedger(
+    days,
+    entries,
+    hoursByDay,
+    "2026-08-09",
+    "2026-07-27",
+    [...goals, { weekStart: "2026-08-10", reachouts: 1000, hours: 140 }],
+  );
+  expect(after.days.map((day) => [day.targets, day.dailyValue])).toEqual(
+    before.days.map((day) => [day.targets, day.dailyValue]),
+  );
+  expect(after.weeks.map((week) => [week.goal, week.weeklyValue])).toEqual(
+    before.weeks.map((week) => [week.goal, week.weeklyValue]),
+  );
+});
+
+test("reassembling a ledger changes nothing, and a patch re-derives later bars in its week", () => {
+  const days = dayRange("2026-10-05", "2026-10-11");
+  const entries = new Map<string, LedgerEntry>([
+    ["2026-10-05", entry("2026-10-05", { reachouts: 22, connections: 3 })],
+  ]);
+  const goals: WeeklyGoal[] = [
+    { weekStart: "2026-10-05", reachouts: 150, hours: 55 },
+  ];
+  const data = assembleLedger(
+    days,
+    entries,
+    new Map([["2026-10-05", 6]]),
+    "2026-10-08",
+    "2026-10-05",
+    goals,
+  );
+  expect(reassembleLedger(data)).toEqual(data);
+
+  const patched = reassembleLedger(data, { "2026-10-05": { reachouts: 60 } });
+  expect(patched.days[0].reachouts).toBe(60);
+  expect(patched.days[0].connections).toBe(3); // unpatched counts survive
+  expect(patched.days[1].targets.outreach).toEqual({
+    kind: "touches",
+    touches: 23,
+  }); // (150 - 60) / 4, rounded up
+  expect(patched.days[0].hours).toBe(6);
 });

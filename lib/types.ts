@@ -1,3 +1,5 @@
+import type { ManualCounts } from "@/lib/ledger-fields";
+
 export const postureValues = ["upright", "slouched", "unknown"] as const;
 export type CaptureSource = "agent" | "browser" | "absent";
 export type LivenessStatus = "fresh" | "weak" | "stale" | "not_checked";
@@ -10,7 +12,7 @@ export type DisplayStatus = SnapshotStatus | "paused" | "no_recent_data";
 /**
  * Whether any vision model actually examined the frame.
  *
- * `"unknown"` means every provider failed, so nothing looked — the headphone
+ * `"unknown"` means every provider failed, so nothing looked: the headphone
  * answer on such a row is a placeholder, NOT an observation. Aggregates must skip
  * these rows rather than counting them as an explicit "no headphones", which is
  * how 415 frames came to assert something nobody saw.
@@ -98,7 +100,7 @@ export type CaptureFreshness = {
   imageAgeMinutes: number | null;
 };
 
-// One logged human correction — which signal was overridden and the model->human
+// One logged human correction: which signal was overridden and the model->human
 // value change. Mirrors the Postgres `feedback` table so the local store can power
 // the same eval/regression export (humanVerifiedCases) offline.
 export type FeedbackEntry = {
@@ -179,26 +181,25 @@ export type AverageStats = {
 };
 
 // Persisted as scoreboard_entries (Postgres) and scoreboardEntries (local JSON)
-// to preserve existing manual reachout/feature data without a migration.
-export type LedgerEntry = {
+// to preserve existing manual reachout/feature data without a migration. The
+// manual counts are listed in lib/ledger-fields.ts; a row saved before a count
+// existed lacks its key, which reads as 0.
+export type LedgerEntry = Partial<ManualCounts> & {
   day: string; // local day YYYY-MM-DD
-  reachouts: number; // manual count, >= 0
   featureDone: boolean; // manual: at least one e2e-tested feature shipped that day
-  replies: number; // manual: replies received that day, >= 0
-  meetings: number; // manual: meetings booked that day, >= 0
-  connections?: number; // manual: new connections that day, >= 0
-  followUpsSent?: number; // manual: follow-ups sent that day, >= 0
   commits: number; // auto: commits to the build repo that day, >= 0
   merges: number; // auto: merged PRs to the build repo that day, >= 0
 };
 // Effective-dated weekly goals. A row keyed by Monday applies from that week
 // forward until the next saved row; earlier weeks never inherit a later goal.
+// Rows saved before the channel split carry only `reachouts` (one touches goal).
 export type WeeklyGoal = {
   weekStart: string; // Monday YYYY-MM-DD
-  reachouts: number; // weekly messages goal, >= 1
+  reachouts: number; // weekly touches goal, >= 1; on a channel goal always emails + connectionRequests
   hours: number; // weekly hours goal, > 0
+  emails?: number; // weekly emails goal; present exactly when connectionRequests is
+  connectionRequests?: number; // weekly LinkedIn connection requests goal
 };
-
 
 // One line of the two-way nudge conversation: an outbound bot buzz ("out") or an
 // inbound owner reply ("in"). `kind` tags the type (8am/away/checkpoint/reply/

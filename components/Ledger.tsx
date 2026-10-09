@@ -18,13 +18,16 @@ import {
   MirrorNotice,
   type MirrorView,
 } from "@/components/MirrorNotice";
+import { OutreachPipeline } from "@/components/OutreachPipeline";
 import { WeeklyGoalsEditor } from "@/components/WeeklyGoalsEditor";
 import type { SaveState } from "@/components/LedgerDayReport";
 import { Num } from "@/components/Num";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import { dailyValue, weeklyProgress } from "@/lib/ledger";
-import type { LedgerData, LedgerDay } from "@/lib/ledger";
-import { clampReachouts, ledgerDayAriaLabel } from "@/lib/ledger-ui";
+import { clampDailyCount, type ManualCountField } from "@/lib/ledger-fields";
+import { reassembleLedger } from "@/lib/ledger";
+import type { LedgerData, LedgerDay, LedgerDayPatch } from "@/lib/ledger";
+import { ledgerDayAriaLabel } from "@/lib/ledger-ui";
+import { outreachBarTotal } from "@/lib/outreach-pace";
 import { cn } from "@/lib/utils";
 import {
   appQuick,
@@ -50,11 +53,11 @@ export type LedgerProps = {
 };
 
 const WEEKDAY_COLUMNS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-type LedgerCountField = "replies" | "meetings" | "connections" | "followUpsSent";
+const SAVE_DEBOUNCE_MS = 360;
 
-function mondayIndex(dayKey: string): number {
-  return (new Date(`${dayKey}T12:00:00Z`).getUTCDay() + 6) % 7;
-}
+type CountDrafts = Record<string, Partial<Record<ManualCountField, number>>>;
+
+const saveKey = (day: string, field: ManualCountField) => `${day}:${field}`;
 
 // Color ramp for a day cell from its 0–100 score; out-of-range padding cells stay
 // nearly invisible so the eye only reads real history.
@@ -90,34 +93,21 @@ export function Ledger({ data, mirror }: LedgerProps) {
   const [selectedDay, setSelectedDay] = useState(data.today);
   const [trayOpen, setTrayOpen] = useState(false);
   const [chartMode, setChartMode] = useState<"daily" | "weekly">("daily");
-  const [reachoutsDraft, setReachoutsDraft] = useState<Record<string, number>>(
-    {},
-  );
-
-  const [repliesDraft, setRepliesDraft] = useState<Record<string, number>>({});
-  const [reachoutsState, setReachoutsState] = useState<Record<string, SaveState>>({});
-  const [meetingsDraft, setMeetingsDraft] = useState<Record<string, number>>(
-    {},
-  );
-  const [connectionsDraft, setConnectionsDraft] = useState<Record<string, number>>({});
-  const [followUpsSentDraft, setFollowUpsSentDraft] = useState<Record<string, number>>({});
-  const [repliesState, setRepliesState] = useState<Record<string, SaveState>>(
-    {},
-  );
-  const [meetingsState, setMeetingsState] = useState<Record<string, SaveState>>(
-    {},
-  );
-  const [connectionsState, setConnectionsState] = useState<Record<string, SaveState>>({});
-  const [followUpsSentState, setFollowUpsSentState] = useState<Record<string, SaveState>>({});
+  // Unsaved counts per day. Drafts re-score through the same reassembly the
+  // server uses, so the board, bars, and pipeline move the moment a count does.
+  const [drafts, setDrafts] = useState<CountDrafts>({});
+  const [saveStates, setSaveStates] = useState<Record<string, SaveState>>({});
   const [breatheDay, setBreatheDay] = useState<string | null>(null);
   const [sessionRequired, setSessionRequired] = useState(false);
   const [intro, setIntro] = useState(true);
   const [isWide, setIsWide] = useState(false);
-  const reachoutTimers = useRef<Record<string, number>>({});
-  const repliesTimers = useRef<Record<string, number>>({});
-  const meetingsTimers = useRef<Record<string, number>>({});
-  const connectionsTimers = useRef<Record<string, number>>({});
-  const followUpsSentTimers = useRef<Record<string, number>>({});
+  const saveTimers = useRef<Record<string, number>>({});
+  const pendingSaves = useRef<CountDrafts>({});
+  // Read by the post-save celebration, which runs after the render that queued it.
+  const latest = useRef({ data, drafts });
+  useEffect(() => {
+    latest.current = { data, drafts };
+  }, [data, drafts]);
   const breatheTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -135,18 +125,9 @@ export function Ledger({ data, mirror }: LedgerProps) {
   }, []);
 
   useEffect(() => {
+    const timers = saveTimers.current;
     return () => {
-      Object.values(reachoutTimers.current).forEach((timer) =>
-        window.clearTimeout(timer),
-      );
-      Object.values(repliesTimers.current).forEach((timer) =>
-        window.clearTimeout(timer),
-      );
-      Object.values(meetingsTimers.current).forEach((timer) =>
-        window.clearTimeout(timer),
-      );
-      Object.values(connectionsTimers.current).forEach((timer) => window.clearTimeout(timer));
-      Object.values(followUpsSentTimers.current).forEach((timer) => window.clearTimeout(timer));
+      Object.values(timers).forEach((timer) => window.clearTimeout(timer));
       if (breatheTimer.current !== null) {
         window.clearTimeout(breatheTimer.current);
       }
@@ -170,181 +151,31 @@ export function Ledger({ data, mirror }: LedgerProps) {
     return () => window.clearInterval(interval);
   }, [router, startTransition]);
 
-  // After a save reconciles, drop the optimistic draft so an external change to
-  // the same day is no longer shadowed.
+  // After a save reconciles, drop each draft the server now agrees with so an
+  // external change to the same day is no longer shadowed.
   useEffect(() => {
-    setReachoutsDraft((draft) => {
+    setDrafts((current) => {
       let changed = false;
-      const next: Record<string, number> = {};
-      for (const [day, value] of Object.entries(draft)) {
+      const next: CountDrafts = {};
+      for (const [day, fields] of Object.entries(current)) {
         const serverDay = data.days.find((entry) => entry.day === day);
-        if (!serverDay || serverDay.reachouts === value) {
-          changed = true;
-          continue;
+        const kept: Partial<Record<ManualCountField, number>> = {};
+        for (const [field, value] of Object.entries(fields) as [ManualCountField, number][]) {
+          if (serverDay && serverDay[field] !== value) kept[field] = value;
+          else changed = true;
         }
-        next[day] = value;
+        if (Object.keys(kept).length > 0) next[day] = kept;
       }
-      return changed ? next : draft;
-    });
-
-    setRepliesDraft((draft) => {
-      let changed = false;
-      const next: Record<string, number> = {};
-      for (const [day, value] of Object.entries(draft)) {
-        const serverDay = data.days.find((entry) => entry.day === day);
-        if (!serverDay || serverDay.replies === value) {
-          changed = true;
-          continue;
-        }
-        next[day] = value;
-      }
-      return changed ? next : draft;
-    });
-    setMeetingsDraft((draft) => {
-      let changed = false;
-      const next: Record<string, number> = {};
-      for (const [day, value] of Object.entries(draft)) {
-        const serverDay = data.days.find((entry) => entry.day === day);
-        if (!serverDay || serverDay.meetings === value) {
-          changed = true;
-          continue;
-        }
-        next[day] = value;
-      }
-      return changed ? next : draft;
-    });
-    setConnectionsDraft((draft) => {
-      let changed = false;
-      const next: Record<string, number> = {};
-      for (const [day, value] of Object.entries(draft)) {
-        const serverDay = data.days.find((entry) => entry.day === day);
-        if (!serverDay || serverDay.connections === value) changed = true;
-        else next[day] = value;
-      }
-      return changed ? next : draft;
-    });
-    setFollowUpsSentDraft((draft) => {
-      let changed = false;
-      const next: Record<string, number> = {};
-      for (const [day, value] of Object.entries(draft)) {
-        const serverDay = data.days.find((entry) => entry.day === day);
-        if (!serverDay || serverDay.followUpsSent === value) changed = true;
-        else next[day] = value;
-      }
-      return changed ? next : draft;
+      return changed ? next : current;
     });
   }, [data.days]);
 
-  const viewDays = useMemo(
-    () =>
-      data.days.map((day) => {
-        const nextReachouts = reachoutsDraft[day.day] ?? day.reachouts;
-        const nextReplies = repliesDraft[day.day] ?? day.replies;
-        const nextMeetings = meetingsDraft[day.day] ?? day.meetings;
-        const nextConnections = connectionsDraft[day.day] ?? day.connections;
-        const nextFollowUpsSent = followUpsSentDraft[day.day] ?? day.followUpsSent;
-        if (
-          nextReachouts === day.reachouts &&
-          nextReplies === day.replies &&
-          nextMeetings === day.meetings
-          && nextConnections === day.connections
-          && nextFollowUpsSent === day.followUpsSent
-        ) {
-          return day;
-        }
-        return {
-          ...day,
-          reachouts: nextReachouts,
-          replies: nextReplies,
-          meetings: nextMeetings,
-          connections: nextConnections,
-          followUpsSent: nextFollowUpsSent,
-          dailyValue: day.inRange
-            ? dailyValue(nextReachouts, day.hours, day.targets)
-            : 0,
-          active:
-            day.inRange &&
-            (nextReachouts > 0 || day.hours > 0),
-        };
-      }),
-    [data.days, connectionsDraft, followUpsSentDraft, meetingsDraft, reachoutsDraft, repliesDraft],
+  const view = useMemo(
+    () => (Object.keys(drafts).length === 0 ? data : reassembleLedger(data, drafts as Record<string, LedgerDayPatch>)),
+    [data, drafts],
   );
-
-  const viewDayMap = useMemo(
-    () => new Map(viewDays.map((day) => [day.day, day])),
-    [viewDays],
-  );
-
-  const viewWeeks = useMemo(
-    () =>
-      data.weeks.map((week) => {
-        const days = week.days.map((day) => viewDayMap.get(day.day) ?? day);
-        const elapsed = days.filter((day) => day.inRange);
-        const reachouts = elapsed.reduce((sum, day) => sum + day.reachouts, 0);
-        const hours =
-          Math.round(elapsed.reduce((sum, day) => sum + day.hours, 0) * 10) /
-          10;
-        const replies = elapsed.reduce((sum, day) => sum + day.replies, 0);
-        const meetings = elapsed.reduce((sum, day) => sum + day.meetings, 0);
-        const commits = elapsed.reduce((sum, day) => sum + day.commits, 0);
-        const merges = elapsed.reduce((sum, day) => sum + day.merges, 0);
-        const replyRate = reachouts > 0 ? replies / reachouts : 0;
-        const bookingRate = replies > 0 ? meetings / replies : 0;
-        const progress = weeklyProgress(reachouts, hours, {
-          reachouts: week.reachoutsTarget,
-          hours: week.hoursTarget,
-        });
-        return {
-          ...week,
-          days,
-          reachouts,
-          hours,
-          replies,
-          meetings,
-          commits,
-          merges,
-          replyRate,
-          bookingRate,
-          ...progress,
-        };
-      }),
-    [data.weeks, viewDayMap],
-  );
-
-  const weekdayAverages = useMemo(() => {
-    const sums = new Array(7).fill(0) as number[];
-    const counts = new Array(7).fill(0) as number[];
-    for (const day of viewDays) {
-      if (!day.inRange) {
-        continue;
-      }
-      const idx = mondayIndex(day.day);
-      sums[idx] += day.dailyValue;
-      counts[idx] += 1;
-    }
-    return WEEKDAY_COLUMNS.map((weekday, index) => ({
-      weekday,
-      averageValue:
-        counts[index] > 0 ? Math.round(sums[index] / counts[index]) : 0,
-    }));
-  }, [viewDays]);
-
-  const dailyRows = useMemo(() => {
-    const elapsed = viewDays.filter((day) => day.inRange);
-    return elapsed.map((day, index) => ({
-      day: day.day,
-      label: day.label,
-      dailyValue: day.dailyValue,
-      movingAverage7:
-        index >= 6
-          ? Math.round(
-              elapsed
-                .slice(index - 6, index + 1)
-                .reduce((sum, item) => sum + item.dailyValue, 0) / 7,
-            )
-          : null,
-    }));
-  }, [viewDays]);
+  const viewWeeks = view.weeks;
+  const viewDayMap = useMemo(() => new Map(view.days.map((day) => [day.day, day])), [view.days]);
 
   const weeklyRows = useMemo(
     () =>
@@ -354,10 +185,10 @@ export function Ledger({ data, mirror }: LedgerProps) {
           weekStart: week.weekStart,
           label: week.label,
           weeklyValue: week.weeklyValue,
-          reachouts: week.reachouts,
+          touches: week.goal.outreach.kind === "touches" ? week.touches : week.counts.emailsSent + week.counts.connectionRequests,
           hours: week.hours,
-          reachoutsTarget: week.reachoutsTarget,
-          hoursTarget: week.hoursTarget,
+          touchesTarget: outreachBarTotal(week.goal.outreach),
+          hoursTarget: week.goal.hours,
         })),
     [viewWeeks],
   );
@@ -366,40 +197,12 @@ export function Ledger({ data, mirror }: LedgerProps) {
     () =>
       viewWeeks
         .filter((week) => week.days.some((day) => day.inRange))
-        .map((week) => ({
-          weekStart: week.weekStart,
-          label: week.label,
-          reachoutsTarget: week.reachoutsTarget,
-          hoursTarget: week.hoursTarget,
-        })),
+        .map((week) => ({ weekStart: week.weekStart, label: week.label, goal: week.goal })),
     [viewWeeks],
   );
   const selectedDayData = viewDayMap.get(selectedDay) ?? null;
-  const currentWeek =
-    viewWeeks.find((week) => week.days.some((day) => day.day === data.today)) ??
-    viewWeeks[viewWeeks.length - 1] ??
-    null;
-  const summaryWeek = currentWeek;
-  const selectedReachouts = selectedDayData?.reachouts ?? 0;
-  const reachoutSaveState = selectedDayData
-    ? (reachoutsState[selectedDayData.day] ?? "idle")
-    : "idle";
-  const selectedReplies = selectedDayData?.replies ?? 0;
-  const selectedMeetings = selectedDayData?.meetings ?? 0;
-  const selectedConnections = selectedDayData?.connections ?? 0;
-  const selectedFollowUpsSent = selectedDayData?.followUpsSent ?? 0;
-  const repliesSaveState = selectedDayData
-    ? (repliesState[selectedDayData.day] ?? "idle")
-    : "idle";
-  const meetingsSaveState = selectedDayData
-    ? (meetingsState[selectedDayData.day] ?? "idle")
-    : "idle";
-  const connectionsSaveState = selectedDayData
-    ? (connectionsState[selectedDayData.day] ?? "idle")
-    : "idle";
-  const followUpsSentSaveState = selectedDayData
-    ? (followUpsSentState[selectedDayData.day] ?? "idle")
-    : "idle";
+  const summaryWeek =
+    viewWeeks.find((week) => week.days.some((day) => day.day === data.today)) ?? viewWeeks[viewWeeks.length - 1] ?? null;
 
   function beginDaySelection(day: string) {
     if (selectedDay === day && trayOpen) {
@@ -410,20 +213,11 @@ export function Ledger({ data, mirror }: LedgerProps) {
     setTrayOpen(true);
   }
 
-  async function persistLedgerUpdate(
-    day: string,
-    body: {
-      reachouts?: number;
-      replies?: number;
-      meetings?: number;
-      connections?: number;
-      followUpsSent?: number;
-    },
-  ) {
+  async function postLedger(body: Record<string, unknown>) {
     const response = await fetch(mirror ? "/mirror-api/ledger" : "/api/ledger", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ day, ...body }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       if (response.status === 401) {
@@ -459,52 +253,16 @@ export function Ledger({ data, mirror }: LedgerProps) {
     setSessionRequired(false);
   }
 
-  async function persistWeeklyGoal(
-    weekStart: string,
-    reachouts: number,
-    hours: number,
-  ) {
-    const response = await fetch(mirror ? "/mirror-api/ledger" : "/api/ledger", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        weekStart,
-        weeklyReachouts: reachouts,
-        weeklyHours: hours,
-      }),
-    });
-    if (!response.ok) {
-      if (response.status === 401) {
-        setSessionRequired(true);
-        throw new Error("AUTH_REQUIRED");
-      }
-      let message = "Could not save.";
-      try {
-        const payload = (await response.json()) as { error?: string };
-        if (payload.error) {
-          message = payload.error;
-        }
-      } catch {
-        // Keep the generic message when the server response isn't JSON.
-      }
-      throw new Error(message);
-    }
-    startTransition(() => router.refresh());
+  function persistWeeklyGoal(weekStart: string, emails: number, connectionRequests: number, hours: number) {
+    return postLedger({ weekStart, weeklyEmails: emails, weeklyConnectionRequests: connectionRequests, weeklyHours: hours });
   }
 
-  function celebrateIfPerfect(
-    day: string,
-    reachouts: number,
-    hours: number,
-  ) {
-    // A perfect day is perfect against its own week's bar, so the targets come
-    // from the day itself. An unknown day key cannot be scored, so it cannot
-    // celebrate either.
-    const targets = viewDayMap.get(day)?.targets;
-    if (
-      !targets ||
-      dailyValue(reachouts, hours, targets) !== 100
-    ) {
+  // A perfect day is perfect against its own bars, read from the same
+  // reassembly the board shows. Celebrates only after the save lands.
+  function celebrateIfPerfect(day: string) {
+    const { data: current, drafts: currentDrafts } = latest.current;
+    const scored = reassembleLedger(current, currentDrafts as Record<string, LedgerDayPatch>).days.find((entry) => entry.day === day);
+    if (!scored || scored.dailyValue !== 100) {
       return;
     }
     if (breatheTimer.current !== null) {
@@ -512,160 +270,95 @@ export function Ledger({ data, mirror }: LedgerProps) {
     }
     setBreatheDay(day);
     breatheTimer.current = window.setTimeout(() => {
-      setBreatheDay((current) => (current === day ? null : current));
+      setBreatheDay((currentDay) => (currentDay === day ? null : currentDay));
       breatheTimer.current = null;
     }, 900);
   }
 
-  function scheduleReachoutsSave(day: string, value: number) {
-    window.clearTimeout(reachoutTimers.current[day]);
-    reachoutTimers.current[day] = window.setTimeout(async () => {
-      try {
-        await persistLedgerUpdate(day, { reachouts: value });
-        const hours = viewDayMap.get(day)?.hours ?? 0;
-        celebrateIfPerfect(day, value, hours);
-        setReachoutsState((state) => ({ ...state, [day]: "idle" }));
-      } catch {
-        setReachoutsState((state) => ({ ...state, [day]: "error" }));
-      }
-    }, 360);
+  function setFieldStates(day: string, fields: ManualCountField[], state: SaveState) {
+    setSaveStates((current) => {
+      const next = { ...current };
+      for (const field of fields) next[saveKey(day, field)] = state;
+      return next;
+    });
   }
 
-  function handleReachoutsChange(nextValue: number) {
-    if (!selectedDayData) {
-      return;
-    }
-    const value = clampReachouts(nextValue);
-    setReachoutsDraft((draft) => ({ ...draft, [selectedDayData.day]: value }));
-    setReachoutsState((state) => ({
-      ...state,
-      [selectedDayData.day]: "saving",
-    }));
-    scheduleReachoutsSave(selectedDayData.day, value);
-  }
-
-  async function handleReachoutsRetry() {
-    if (!selectedDayData) {
-      return;
-    }
-    setReachoutsState((state) => ({
-      ...state,
-      [selectedDayData.day]: "saving",
-    }));
+  // Edits to one day coalesce into a single debounced POST of every changed
+  // count, so tapping three steppers sends one request, not three.
+  async function flushDay(day: string) {
+    const patch = pendingSaves.current[day] ?? {};
+    delete pendingSaves.current[day];
+    const fields = Object.keys(patch) as ManualCountField[];
+    if (fields.length === 0) return;
     try {
-      await persistLedgerUpdate(selectedDayData.day, {
-        reachouts: selectedReachouts,
-      });
-      celebrateIfPerfect(
-        selectedDayData.day,
-        selectedReachouts,
-        selectedDayData.hours,
-      );
-      setReachoutsState((state) => ({
-        ...state,
-        [selectedDayData.day]: "idle",
-      }));
+      await postLedger({ day, ...patch });
+      setFieldStates(day, fields, "idle");
+      celebrateIfPerfect(day);
     } catch {
-      setReachoutsState((state) => ({
-        ...state,
-        [selectedDayData.day]: "error",
-      }));
+      setFieldStates(day, fields, "error");
     }
   }
 
-  // Count fields reuse reachouts' optimistic-draft + debounced-save +
-  // inline-retry machinery, parameterized by field. Neither feeds the daily
-  // score, so there is no celebrate step; just persist and reconcile.
-  const countHooks = {
-    replies: {
-      setDraft: setRepliesDraft,
-      setSave: setRepliesState,
-      timers: repliesTimers,
-    },
-    meetings: {
-      setDraft: setMeetingsDraft,
-      setSave: setMeetingsState,
-      timers: meetingsTimers,
-    },
-    connections: {
-      setDraft: setConnectionsDraft,
-      setSave: setConnectionsState,
-      timers: connectionsTimers,
-    },
-    followUpsSent: {
-      setDraft: setFollowUpsSentDraft,
-      setSave: setFollowUpsSentState,
-      timers: followUpsSentTimers,
-    },
-  } as const;
-
-  function countUpdate(field: LedgerCountField, value: number) {
-    return {
-      [field]: value,
-    } as Record<LedgerCountField, number>;
+  function scheduleSave(day: string, field: ManualCountField, value: number) {
+    pendingSaves.current[day] = { ...pendingSaves.current[day], [field]: value };
+    setFieldStates(day, [field], "saving");
+    window.clearTimeout(saveTimers.current[day]);
+    saveTimers.current[day] = window.setTimeout(() => void flushDay(day), SAVE_DEBOUNCE_MS);
   }
 
-  function scheduleCountSave(
-    field: LedgerCountField,
-    day: string,
-    value: number,
-  ) {
-    const { setSave, timers } = countHooks[field];
-    window.clearTimeout(timers.current[day]);
-    timers.current[day] = window.setTimeout(async () => {
-      try {
-        await persistLedgerUpdate(day, countUpdate(field, value));
-        setSave((state) => ({ ...state, [day]: "idle" }));
-      } catch {
-        setSave((state) => ({ ...state, [day]: "error" }));
-      }
-    }, 360);
-  }
-
-  function handleCountChange(field: LedgerCountField, nextValue: number) {
+  function handleCountChange(field: ManualCountField, nextValue: number) {
     if (!selectedDayData) {
       return;
     }
-    const value = clampReachouts(nextValue);
-    const { setDraft, setSave } = countHooks[field];
-    setDraft((draft) => ({ ...draft, [selectedDayData.day]: value }));
-    setSave((state) => ({ ...state, [selectedDayData.day]: "saving" }));
-    scheduleCountSave(field, selectedDayData.day, value);
+    const day = selectedDayData.day;
+    const value = clampDailyCount(nextValue);
+    setDrafts((current) => ({ ...current, [day]: { ...current[day], [field]: value } }));
+    scheduleSave(day, field, value);
   }
 
-  async function handleCountRetry(field: LedgerCountField) {
+  function handleCountRetry(field: ManualCountField) {
     if (!selectedDayData) {
       return;
     }
-    const values = { replies: selectedReplies, meetings: selectedMeetings, connections: selectedConnections, followUpsSent: selectedFollowUpsSent };
-    const value = values[field];
-    const { setSave } = countHooks[field];
-    setSave((state) => ({ ...state, [selectedDayData.day]: "saving" }));
-    try {
-      await persistLedgerUpdate(selectedDayData.day, countUpdate(field, value));
-      setSave((state) => ({ ...state, [selectedDayData.day]: "idle" }));
-    } catch {
-      setSave((state) => ({ ...state, [selectedDayData.day]: "error" }));
-    }
+    scheduleSave(selectedDayData.day, field, selectedDayData[field]);
   }
 
+  const saveStateOf = (field: ManualCountField): SaveState =>
+    selectedDayData ? (saveStates[saveKey(selectedDayData.day, field)] ?? "idle") : "idle";
+
+  const outreachGoal = summaryWeek?.goal.outreach ?? null;
   const summaryStats = summaryWeek
     ? [
-        {
-          label: "Touches",
-          value: summaryWeek.reachouts,
-          target: summaryWeek.reachoutsTarget,
-          pct: summaryWeek.reachoutsPct,
-          accent: "from-blue-400/80 to-sky-300/90",
-        },
+        ...(outreachGoal?.kind === "channels"
+          ? [
+              {
+                label: "Emails",
+                value: summaryWeek.counts.emailsSent,
+                target: outreachGoal.emails,
+                accent: "from-blue-400/80 to-sky-300/90",
+              },
+              {
+                label: "Requests",
+                value: summaryWeek.counts.connectionRequests,
+                target: outreachGoal.connectionRequests,
+                accent: "from-sky-400/80 to-cyan-300/90",
+              },
+            ]
+          : [
+              {
+                label: "Touches",
+                value: summaryWeek.touches,
+                target: outreachGoal?.touches ?? 0,
+                accent: "from-blue-400/80 to-sky-300/90",
+              },
+            ]),
         {
           label: "Hours",
           value: summaryWeek.hours,
-          target: summaryWeek.hoursTarget,
-          pct: summaryWeek.hoursPct,
+          target: summaryWeek.goal.hours,
           accent: "from-teal-400/80 to-emerald-300/90",
         },
-      ]
+      ].map((stat) => ({ ...stat, pct: stat.target > 0 ? Math.min(1, stat.value / stat.target) : 1 }))
     : [];
 
   const dayReportPanel = selectedDayData ? (
@@ -699,28 +392,9 @@ export function Ledger({ data, mirror }: LedgerProps) {
           sessionRequired={sessionRequired}
           onAuthenticate={authenticateOwner}
           day={selectedDayData}
-          reachouts={selectedReachouts}
-          onReachoutsChange={handleReachoutsChange}
-          onReachoutsRetry={handleReachoutsRetry}
-          reachoutsState={reachoutSaveState}
-          replies={selectedReplies}
-          onRepliesChange={(value) => handleCountChange("replies", value)}
-          onRepliesRetry={() => handleCountRetry("replies")}
-          repliesState={repliesSaveState}
-          meetings={selectedMeetings}
-          onMeetingsChange={(value) => handleCountChange("meetings", value)}
-          onMeetingsRetry={() => handleCountRetry("meetings")}
-          meetingsState={meetingsSaveState}
-          connections={selectedConnections}
-          onConnectionsChange={(value) => handleCountChange("connections", value)}
-          onConnectionsRetry={() => handleCountRetry("connections")}
-          connectionsState={connectionsSaveState}
-          followUpsSent={selectedFollowUpsSent}
-          onFollowUpsSentChange={(value) => handleCountChange("followUpsSent", value)}
-          onFollowUpsSentRetry={() => handleCountRetry("followUpsSent")}
-          followUpsSentState={followUpsSentSaveState}
-          dailyReachoutTarget={selectedDayData.targets.reachouts}
-          dailyHoursTarget={selectedDayData.targets.hours}
+          saveStateOf={saveStateOf}
+          onCountChange={handleCountChange}
+          onCountRetry={handleCountRetry}
         />
       </div>
     </div>
@@ -763,7 +437,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
                 </Num>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className={cn("grid gap-3", summaryStats.length === 3 ? "grid-cols-3" : "grid-cols-2")}>
               {summaryStats.map((stat) => (
                 <div key={stat.label}>
                   <div className="flex items-baseline justify-between gap-1">
@@ -796,22 +470,14 @@ export function Ledger({ data, mirror }: LedgerProps) {
               ))}
             </div>
             <p className="mt-4 text-xs text-zinc-400">
-              Reply rate{" "}
-              <span className="text-zinc-200">
-                {Math.round(summaryWeek.replyRate * 100)}%
-              </span>{" "}
-              · <span className="text-zinc-200">{summaryWeek.meetings}</span>{" "}
-              meetings (
-              <span className="text-zinc-200">
-                {Math.round(summaryWeek.bookingRate * 100)}%
-              </span>{" "}
-              of replies) ·{" "}
+              Outreach paced Monday to Friday ·{" "}
               <span className="text-zinc-200">{summaryWeek.commits}</span>{" "}
               commits ·{" "}
               <span className="text-zinc-200">{summaryWeek.merges}</span> merges
             </p>
           </section>
         ) : null}
+        <OutreachPipeline funnel={view.funnel} />
         {summaryWeek ? (
           <WeeklyGoalsEditor
             weeks={goalWeeks}
@@ -857,7 +523,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
           </div>
           <LedgerCharts
             mode={chartMode}
-            dailyRows={dailyRows}
+            dailyRows={view.dailyChart}
             weeklyRows={weeklyRows}
             selectedDay={trayOpen ? selectedDay : null}
             reduceMotion={reduceMotion}
@@ -870,7 +536,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
             Weekday activity averages
           </h2>
           <div className="grid grid-cols-7 gap-2">
-            {weekdayAverages.map((average, index) => (
+            {view.weekdayAverages.map((average, index) => (
               <div
                 key={average.weekday}
                 className="flex flex-col items-center gap-2"

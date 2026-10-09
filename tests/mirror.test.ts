@@ -82,7 +82,7 @@ test("mirror ledger overrides rebuild derived scores without mutating the snapsh
   });
 
   expect(updated.days.find((day) => day.day === entry.day)?.dailyValue).toBe(87);
-  expect(updated.weeks[0]?.reachouts).toBe(250);
+  expect(updated.weeks[0]?.touches).toBe(250);
   expect(updated.days.find((day) => day.day === entry.day)?.featureDone).toBe(true);
   expect(updated.weeks[0]?.commits).toBe(2);
   expect(base.days.find((day) => day.day === entry.day)?.reachouts).toBe(1);
@@ -106,8 +106,23 @@ test("a mirror weekly goal applies forward until a later mirror goal", () => {
     },
   });
 
-  expect(updated.weeks[0]?.reachoutsTarget).toBe(500);
-  expect(updated.weeks[1]?.reachoutsTarget).toBe(500);
+  expect(updated.weeks[0]?.goal.outreach).toEqual({ kind: "touches", touches: 500 });
+  expect(updated.weeks[1]?.goal.outreach).toEqual({ kind: "touches", touches: 500 });
+});
+
+test("a mirror channel goal and per-channel counts rebuild channel bars", () => {
+  const days = dayRange("2026-10-12", "2026-10-18");
+  const base = assembleLedger(days, new Map(), new Map(), "2026-10-13", "2026-10-12");
+
+  const updated = applyLedgerOverrides(base, {
+    days: { "2026-10-12": { emailsSent: 40, connectionRequests: 5 } },
+    weeks: { "2026-10-12": { reachouts: 150, hours: 55, emails: 100, connectionRequests: 50 } },
+  });
+
+  expect(updated.days[0].targets.outreach).toEqual({ kind: "channels", emails: 20, connectionRequests: 10 });
+  // Tuesday catches up on Monday's shortfall per channel: (100 - 40) / 4, (50 - 5) / 4.
+  expect(updated.days[1].targets.outreach).toEqual({ kind: "channels", emails: 15, connectionRequests: 12 });
+  expect(updated.weeks[0].counts.emailsSent).toBe(40);
 });
 
 test("mirror dashboard corrections rebuild the visible hour and critical total", () => {

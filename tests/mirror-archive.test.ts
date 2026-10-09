@@ -127,8 +127,28 @@ test("stale Ledger grows into next week before applying today's and new-week ove
   expect(current.today).toBe("2026-09-07");
   expect(current.days.find((day) => day.day === current.today)?.reachouts).toBe(42);
   expect(current.days.find((day) => day.day === current.today)?.hours).toBe(0);
-  expect(current.weeks.at(-1)?.reachoutsTarget).toBe(300);
+  expect(current.weeks.at(-1)?.goal.outreach).toEqual({ kind: "touches", touches: 300 });
   expect(ledger.today).toBe("2026-09-03");
+});
+
+test("a snapshot published by an older Mac build still rebuilds with its goals and counts", () => {
+  // The Mac and the deployment update independently. Before the channel split a
+  // published week carried reachoutsTarget/hoursTarget and a day had no channel counts.
+  const fresh = assembleLedger(dayRange("2026-10-05", "2026-10-11"), new Map([
+    ["2026-10-05", { day: "2026-10-05", featureDone: false, commits: 0, merges: 0, reachouts: 22, connections: 2 }],
+  ]), new Map(), "2026-10-07", "2026-10-05");
+  const legacySnapshot = JSON.parse(JSON.stringify({
+    ...fresh,
+    weeks: fresh.weeks.map(({ goal: _goal, counts: _counts, ...week }) => ({ ...week, reachoutsTarget: 150, hoursTarget: 55 })),
+    days: fresh.days.map(({ emailsSent: _e, connectionRequests: _r, linkedinMessages: _m, due: _d, ...day }) => day),
+  }));
+
+  const rebuilt = mirrorLedgerForToday(legacySnapshot, "2026-10-08");
+  expect(rebuilt.weeks[0].goal).toEqual({ outreach: { kind: "touches", touches: 150 }, hours: 55 });
+  expect(rebuilt.days[0].reachouts).toBe(22);
+  expect(rebuilt.days[0].connections).toBe(2);
+  expect(rebuilt.days[0].emailsSent).toBe(0);
+  expect(rebuilt.days[3].targets.outreach).toEqual({ kind: "touches", touches: 64 }); // (150 - 22) / 2
 });
 
 test("compact image stored once across repeated publishes, publicly served without Blob URL", async () => {

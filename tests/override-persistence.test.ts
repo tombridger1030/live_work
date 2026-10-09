@@ -113,6 +113,26 @@ test("a weekly goal racing a day edit preserves both across ledger instances", a
   expect(blob.counts().conflicts).toBe(1);
 });
 
+test("per-channel day counts and a channel goal survive the overlay round trip", async () => {
+  const blob = sharedBlob({ days: {}, weeks: {} });
+  const store = createLedgerOverrideStore(blob.io);
+  await saveLedgerDayOverride("2026-10-12", { emailsSent: 30, connectionRequests: 8, linkedinMessages: 3 }, store);
+  await saveLedgerWeekOverride("2026-10-12", { reachouts: 150, hours: 55, emails: 100, connectionRequests: 50 }, store);
+  await saveLedgerWeekOverride("2026-10-05", { reachouts: 1500, hours: 55 }, store); // above the daily cap, still a week
+  expect(await readLedgerOverrides(store)).toEqual({
+    days: { "2026-10-12": { emailsSent: 30, connectionRequests: 8, linkedinMessages: 3 } },
+    weeks: {
+      "2026-10-12": { reachouts: 150, hours: 55, emails: 100, connectionRequests: 50 },
+      "2026-10-05": { reachouts: 1500, hours: 55 },
+    },
+  });
+});
+
+test("an overlay goal whose channels do not add up is rejected, not guessed", async () => {
+  const blob = sharedBlob({ days: {}, weeks: { "2026-10-12": { reachouts: 140, hours: 55, emails: 100, connectionRequests: 50 } } });
+  await expect(readLedgerOverrides(createLedgerOverrideStore(blob.io))).rejects.toThrow("Invalid ledger week override");
+});
+
 const scenarios = [
   {
     name: "ledger", empty: { days: {}, weeks: {} }, create: createLedgerOverrideStore,

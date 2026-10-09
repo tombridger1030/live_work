@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test";
+import { clampDailyCount, readManualCounts } from "@/lib/ledger-fields";
 import {
   ledgerChartDayTick,
   ledgerDayAriaLabel,
   progressState,
-  clampReachouts,
 } from "@/lib/ledger-ui";
 import type { LedgerDay } from "@/lib/ledger";
 
 const sampleDay: LedgerDay = {
+  ...readManualCounts({ reachouts: 30, emailsSent: 4, connectionRequests: 2 }),
   day: "2026-06-28",
   index: 1,
   label: "Jun 28",
@@ -17,25 +18,21 @@ const sampleDay: LedgerDay = {
   monthLabel: "Jun",
   inRange: true,
   state: "today",
-  reachouts: 36,
   hours: 10.5,
   featureDone: true,
-  replies: 0,
-  meetings: 0,
-  connections: 0,
-  followUpsSent: 0,
   commits: 0,
   merges: 0,
-  targets: { reachouts: 250 / 7, hours: 70 / 7 },
+  targets: { outreach: null, hours: 70 / 7 },
+  due: null,
   dailyValue: 100,
   active: true,
 };
 
-test("clampReachouts rounds and clamps to the accepted API range", () => {
-  expect(clampReachouts(12.4)).toBe(12);
-  expect(clampReachouts(-3)).toBe(0);
-  expect(clampReachouts(2048)).toBe(1000);
-  expect(clampReachouts(Number.NaN)).toBe(0);
+test("clampDailyCount rounds and clamps to the accepted API range", () => {
+  expect(clampDailyCount(12.4)).toBe(12);
+  expect(clampDailyCount(-3)).toBe(0);
+  expect(clampDailyCount(2048)).toBe(1000);
+  expect(clampDailyCount(Number.NaN)).toBe(0);
 });
 
 test("progressState keeps weekly and daily labels aligned", () => {
@@ -56,7 +53,7 @@ test("daily trend keeps duplicate day numbers on unique full-date coordinates", 
 
 test("ledgerDayAriaLabel exposes the raw day facts for assistive tech", () => {
   expect(ledgerDayAriaLabel(sampleDay)).toBe(
-    "Sun Jun 28: 100 activity points, 36 reachouts, 10.5 hours",
+    "Sun Jun 28: 100 activity points, 36 touches, 10.5 hours",
   );
   expect(ledgerDayAriaLabel({ ...sampleDay, state: "future" })).toBe(
     "Sun Jun 28, future day",

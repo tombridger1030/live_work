@@ -3,22 +3,22 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { validateWeeklyGoal, WEEKLY_GOAL_MAX_HOURS, WEEKLY_GOAL_MAX_REACHOUTS, WEEKLY_GOAL_MIN_HOURS, WEEKLY_GOAL_MIN_REACHOUTS } from "@/lib/weekly-goal";
+import type { WeeklyTargets } from "@/lib/ledger";
+import { validateWeeklyGoal, WEEKLY_GOAL_MAX_COUNT, WEEKLY_GOAL_MAX_HOURS, WEEKLY_GOAL_MIN_HOURS } from "@/lib/weekly-goal";
 import { cn } from "@/lib/utils";
 import { LedgerOwnerAccess } from "@/components/LedgerOwnerAccess";
 
 export type WeeklyGoalOption = {
   weekStart: string;
   label: string;
-  reachoutsTarget: number;
-  hoursTarget: number;
+  goal: WeeklyTargets;
 };
 
 type WeeklyGoalsEditorProps = {
   weeks: WeeklyGoalOption[];
   initialWeekStart: string;
   sessionRequired: boolean;
-  onSave: (weekStart: string, reachouts: number, hours: number) => Promise<void>;
+  onSave: (weekStart: string, emails: number, connectionRequests: number, hours: number) => Promise<void>;
 
   onAuthenticate: (secret: string) => Promise<void>;
 };
@@ -26,40 +26,55 @@ function goalValidationMessage(error: string): string {
   if (error.startsWith("weekStart")) {
     return "Choose a valid Monday.";
   }
-  if (error.startsWith("weeklyReachouts")) {
-    return `Touches must be a whole number from ${WEEKLY_GOAL_MIN_REACHOUTS.toLocaleString()} to ${WEEKLY_GOAL_MAX_REACHOUTS.toLocaleString()}.`;
+  if (error.startsWith("weeklyEmails and")) {
+    return "Set at least one email or connection request.";
+  }
+  if (error.startsWith("weeklyEmails")) {
+    return `Emails must be a whole number from 0 to ${WEEKLY_GOAL_MAX_COUNT.toLocaleString()}.`;
+  }
+  if (error.startsWith("weeklyConnectionRequests")) {
+    return `Connection requests must be a whole number from 0 to ${WEEKLY_GOAL_MAX_COUNT.toLocaleString()}.`;
   }
   return `Hours must be from ${WEEKLY_GOAL_MIN_HOURS} to ${WEEKLY_GOAL_MAX_HOURS}.`;
 }
 
 /**
- * Edits the effective-dated message and hours goals for one displayed week.
+ * Edits the effective-dated email, connection-request, and hours goals for one
+ * displayed week. A week still on a single touches goal opens with the channel
+ * fields empty, so saving it is always a deliberate split.
  * Preconditions: `weeks` contains only selectable Monday-start weeks and the
  * callbacks persist through the server. Postcondition: a successful save leaves
  * the selected week showing the submitted goals after the next refresh.
  */
 export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, onSave, onAuthenticate }: WeeklyGoalsEditorProps) {
   const [selectedWeekStart, setSelectedWeekStart] = useState(initialWeekStart);
-  const [messagesDraft, setMessagesDraft] = useState("");
+  const [emailsDraft, setEmailsDraft] = useState("");
+  const [requestsDraft, setRequestsDraft] = useState("");
   const [hoursDraft, setHoursDraft] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveMessage, setSaveMessage] = useState("");
 
   const selectedWeek = weeks.find((week) => week.weekStart === selectedWeekStart) ?? weeks[weeks.length - 1] ?? null;
   const selectedWeekKey = selectedWeek?.weekStart ?? null;
-  const selectedWeekReachoutsTarget = selectedWeek?.reachoutsTarget ?? null;
-  const selectedWeekHoursTarget = selectedWeek?.hoursTarget ?? null;
+  const outreach = selectedWeek?.goal.outreach ?? null;
+  const legacyTouches = outreach?.kind === "touches" ? outreach.touches : null;
+  const savedEmails = outreach?.kind === "channels" ? String(outreach.emails) : "";
+  const savedRequests = outreach?.kind === "channels" ? String(outreach.connectionRequests) : "";
+  const selectedWeekHoursTarget = selectedWeek?.goal.hours ?? null;
 
   useEffect(() => {
-    if (selectedWeekKey === null || selectedWeekReachoutsTarget === null || selectedWeekHoursTarget === null) {
+    if (selectedWeekKey === null || selectedWeekHoursTarget === null) {
       return;
     }
     if (selectedWeekKey !== selectedWeekStart) {
       setSelectedWeekStart(selectedWeekKey);
     }
-    setMessagesDraft(String(selectedWeekReachoutsTarget));
+    setEmailsDraft(savedEmails);
+    setRequestsDraft(savedRequests);
     setHoursDraft(String(selectedWeekHoursTarget));
-  }, [selectedWeekHoursTarget, selectedWeekKey, selectedWeekReachoutsTarget, selectedWeekStart]);
+  }, [savedEmails, savedRequests, selectedWeekHoursTarget, selectedWeekKey, selectedWeekStart]);
+
+  const draftTotal = Number(emailsDraft || 0) + Number(requestsDraft || 0);
 
   useEffect(() => {
     setSaveState("idle");
@@ -71,9 +86,10 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
     if (!selectedWeek) {
       return;
     }
-    const reachouts = Number(messagesDraft);
+    const emails = emailsDraft === "" ? Number.NaN : Number(emailsDraft);
+    const connectionRequests = requestsDraft === "" ? Number.NaN : Number(requestsDraft);
     const hours = Number(hoursDraft);
-    const validation = validateWeeklyGoal(selectedWeek.weekStart, reachouts, hours);
+    const validation = validateWeeklyGoal(selectedWeek.weekStart, emails, connectionRequests, hours);
     if (!validation.ok) {
       setSaveState("error");
       setSaveMessage(goalValidationMessage(validation.error));
@@ -83,7 +99,7 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
     setSaveState("saving");
     setSaveMessage("");
     try {
-      await onSave(selectedWeek.weekStart, reachouts, hours);
+      await onSave(selectedWeek.weekStart, emails, connectionRequests, hours);
       setSaveState("saved");
       setSaveMessage("Goals saved for this week.");
     } catch (error) {
@@ -119,18 +135,40 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
             </select>
           </label>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          {legacyTouches !== null ? (
+            <p className="text-xs leading-5 text-zinc-400">
+              This week uses one goal of {legacyTouches} touches. Split it into emails and connection requests to pace each
+              one. Touches logged without a channel won&apos;t count toward the split.
+            </p>
+          ) : null}
+
+          <div className="grid gap-3 sm:grid-cols-3">
             <label className="block text-xs text-zinc-400">
-              Touches / week
+              Emails / week
               <Input
-                aria-label="Touches per week"
+                aria-label="Emails per week"
                 className="mt-1 border-white/[0.1] bg-black/30 text-zinc-100"
                 type="number"
-                min={WEEKLY_GOAL_MIN_REACHOUTS}
-                max={WEEKLY_GOAL_MAX_REACHOUTS}
+                min={0}
+                max={WEEKLY_GOAL_MAX_COUNT}
                 step={1}
-                value={messagesDraft}
-                onChange={(event) => setMessagesDraft(event.target.value)}
+                placeholder="e.g. 100"
+                value={emailsDraft}
+                onChange={(event) => setEmailsDraft(event.target.value)}
+              />
+            </label>
+            <label className="block text-xs text-zinc-400">
+              Connection requests / week
+              <Input
+                aria-label="Connection requests per week"
+                className="mt-1 border-white/[0.1] bg-black/30 text-zinc-100"
+                type="number"
+                min={0}
+                max={WEEKLY_GOAL_MAX_COUNT}
+                step={1}
+                placeholder="e.g. 50"
+                value={requestsDraft}
+                onChange={(event) => setRequestsDraft(event.target.value)}
               />
             </label>
             <label className="block text-xs text-zinc-400">
@@ -147,6 +185,11 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
               />
             </label>
           </div>
+          <p className="text-[11px] text-zinc-500" aria-live="polite">
+            {Number.isFinite(draftTotal) && draftTotal > 0
+              ? `${draftTotal} touches a week, paced Monday to Friday.`
+              : "Paced Monday to Friday. Weekends carry no outreach goal."}
+          </p>
 
           <div className="flex flex-wrap items-center gap-3">
             <Button type="submit" size="sm" disabled={saveState === "saving"}>

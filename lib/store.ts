@@ -28,7 +28,9 @@ import {
 } from "@/lib/time";
 import { RUBRIC_VERSION } from "@/lib/score";
 import { correctableFields, type CorrectableField } from "@/lib/feedback";
-import { validateWeeklyGoal } from "@/lib/weekly-goal";
+import { channelWeeklyGoal, validateWeeklyGoal } from "@/lib/weekly-goal";
+import { MANUAL_COUNT_FIELDS, readManualCounts, type ManualCountField } from "@/lib/ledger-fields";
+import type { LedgerDayPatch } from "@/lib/ledger";
 import { sql } from "@/lib/sql";
 import { assertStorageMounted } from "@/lib/storage-availability";
 
@@ -60,7 +62,7 @@ type LocalState = {
   captureAttempts?: Record<string, string>;
 };
 
-// Local data root — the JSON store + thumbnails. Override with WORK_LIVE_DATA_DIR
+// Local data root: the JSON store + thumbnails. Override with WORK_LIVE_DATA_DIR
 // (e.g. a mounted external drive) so data lives off the boot/SD volume; defaults
 // to the repo's .work-live for local dev.
 export function localDataRoot(): string {
@@ -72,7 +74,7 @@ const localStoreFile = path.join(localRoot, "store.json");
 const localThumbRoot = path.join(localRoot, "thumbs");
 
 // Retention bound for the local JSON store. This was 2000 when the local store
-// was only a dev fallback — as the SELF-HOSTED production datastore that silently
+// was only a dev fallback. As the SELF-HOSTED production datastore that silently
 // deleted history after ~1-2 weeks (288 captures/day), and would have truncated a
 // Postgres restore on the very next capture. Sized to hold years (288/day * 365 ~=
 // 105k) while still bounding file growth; snapshots are metadata only (~450 bytes
@@ -150,7 +152,7 @@ async function writeLocalState(state: LocalState): Promise<void> {
 
 // Serializes a read-modify-write of the local JSON store so concurrent writers
 // (e.g. a debounced reachouts flush racing a feature toggle) can't lose updates
-// or interleave. Postgres paths don't use this — the database upserts atomically.
+// or interleave. Postgres paths don't use this; the database upserts atomically.
 let localStateChain: Promise<unknown> = Promise.resolve();
 async function withLocalState<T>(
   mutator: (state: LocalState) => T | Promise<T>,
@@ -174,7 +176,7 @@ async function persistThumbnail(
 ): Promise<string> {
   // Thumbnails follow the store: Blob is only the right home for them in the
   // hosted (Postgres) deployment, where there is no durable disk. The presence of
-  // BLOB_READ_WRITE_TOKEN must NOT decide this on its own — the self-hosted Mac
+  // BLOB_READ_WRITE_TOKEN must NOT decide this on its own: the self-hosted Mac
   // now holds that token to publish the offline mirror (lib/mirror.ts), and
   // treating it as "upload thumbnails" would silently move every webcam frame off
   // the expansion drive into public object storage.
@@ -290,6 +292,9 @@ async function sqlClient() {
     await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS follow_ups_sent INTEGER NOT NULL DEFAULT 0 CHECK (follow_ups_sent >= 0)`;
     await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS commits INTEGER NOT NULL DEFAULT 0 CHECK (commits >= 0)`;
     await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS merges INTEGER NOT NULL DEFAULT 0 CHECK (merges >= 0)`;
+    // Per-channel counts live in one JSONB object keyed by field name, so a new
+    // count in lib/ledger-fields.ts needs no schema change.
+    await sql`ALTER TABLE scoreboard_entries ADD COLUMN IF NOT EXISTS outreach_counts JSONB NOT NULL DEFAULT '{}'::jsonb`;
     await sql`
       CREATE TABLE IF NOT EXISTS weekly_goals (
         week_start DATE PRIMARY KEY,
@@ -298,6 +303,8 @@ async function sqlClient() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )
     `;
+    await sql`ALTER TABLE weekly_goals ADD COLUMN IF NOT EXISTS emails INTEGER CHECK (emails >= 0)`;
+    await sql`ALTER TABLE weekly_goals ADD COLUMN IF NOT EXISTS connection_requests INTEGER CHECK (connection_requests >= 0)`;
     // The hours >= 0.1 check is created inline by CREATE TABLE above. Re-asserting
     // it here via DROP + ADD races across concurrent cold-start schema inits and
     // throws 42710 "constraint already exists", so it is intentionally omitted.
@@ -361,26 +368,53 @@ function mapCheckin(row: Record<string, unknown>): HourlyCheckin {
   };
 }
 
+// Counts stored in their own Postgres columns; every other manual count is a
+// key in the `outreach_counts` JSONB object.
+const COLUMN_COUNT_FIELDS = {
+  reachouts: "reachouts",
+  replies: "replies",
+  meetings: "meetings",
+  connections: "connections",
+  followUpsSent: "follow_ups_sent",
+} as const satisfies Partial<Record<ManualCountField, string>>;
+
+function isColumnCountField(field: ManualCountField): field is keyof typeof COLUMN_COUNT_FIELDS {
+  return field in COLUMN_COUNT_FIELDS;
+}
+
+function jsonCounts(fields: Partial<Record<ManualCountField, number>>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const field of MANUAL_COUNT_FIELDS) {
+    const value = fields[field];
+    if (value !== undefined && !isColumnCountField(field)) {
+      out[field] = value;
+    }
+  }
+  return out;
+}
+
 function mapLedgerEntry(row: Record<string, unknown>): LedgerEntry {
-  return {
+  const stored = (row.outreach_counts ?? {}) as Record<string, unknown>;
+  const entry: LedgerEntry = {
     day: String(row.day),
-    reachouts: Number(row.reachouts),
     featureDone: Boolean(row.feature_done),
-    replies: Number(row.replies),
-    meetings: Number(row.meetings),
-    connections: Number(row.connections ?? 0),
-    followUpsSent: Number(row.follow_ups_sent ?? 0),
     commits: Number(row.commits),
     merges: Number(row.merges),
   };
+  for (const field of MANUAL_COUNT_FIELDS) {
+    const value = isColumnCountField(field) ? row[COLUMN_COUNT_FIELDS[field]] : stored[field];
+    entry[field] = Number(value ?? 0);
+  }
+  return entry;
 }
 
 function mapWeeklyGoal(row: Record<string, unknown>): WeeklyGoal {
-  return {
-    weekStart: String(row.week_start).slice(0, 10),
-    reachouts: Number(row.reachouts),
-    hours: Number(row.hours),
-  };
+  const weekStart = String(row.week_start).slice(0, 10);
+  const hours = Number(row.hours);
+  if (row.emails != null && row.connection_requests != null) {
+    return channelWeeklyGoal(weekStart, Number(row.emails), Number(row.connection_requests), hours);
+  }
+  return { weekStart, reachouts: Number(row.reachouts), hours };
 }
 
 function mapNudgeMessage(row: Record<string, unknown>): NudgeMessage {
@@ -634,7 +668,7 @@ export async function snapshotThumbnail(id: string): Promise<string | null> {
 }
 
 /**
- * Raw thumbnail bytes for one snapshot id — decoded from the stored data URI,
+ * Raw thumbnail bytes for one snapshot id, decoded from the stored data URI,
  * fetched from the Blob URL, or read from the local file. The rubric backfill
  * re-runs the vision model on these. Null when the id or bytes are unavailable.
  */
@@ -661,7 +695,7 @@ export async function snapshotThumbnailBytes(
 
 /**
  * Snapshots whose stored analysis predates `version` (older value or NULL),
- * oldest first, capped at `limit` — the queue the backfill re-analyzes against
+ * oldest first, capped at `limit`: the queue the backfill re-analyzes against
  * the current rubric. Postgres-only; local dev (fixtures) has nothing to backfill.
  */
 export async function snapshotsNeedingRubric(
@@ -720,7 +754,7 @@ export async function countSnapshotsNeedingRubric(
 }
 
 /**
- * One snapshot by id with all signals — needed to apply a human correction and
+ * One snapshot by id with all signals, needed to apply a human correction and
  * recompute its hour. Null when unknown.
  */
 export async function getSnapshotById(id: string): Promise<SnapshotRow | null> {
@@ -800,7 +834,7 @@ export async function recordFeedback(input: {
 }
 
 /**
- * The human-corrected snapshots, newest first — the regression set for the
+ * The human-corrected snapshots, newest first: the regression set for the
  * capture agent's misclassifications. A row is included the moment a human
  * correction marks it `human_verified`, so every correction auto-enrolls with no
  * extra bookkeeping.
@@ -811,14 +845,14 @@ export async function recordFeedback(input: {
  * explicit feedback correction are returned: the owner-confirmed away-window path
  * (purge-gaming) marks rows human_verified WITHOUT a feedback row to encode a
  * not-working window (a person can be physically present but off-task), not a
- * presence-detector error — those are excluded so the eval judges the detector
+ * presence-detector error. Those are excluded so the eval judges the detector
  * against real physical-presence corrections only.
  *
  * `modelSaid` carries what the model ORIGINALLY answered for each corrected
  * field, taken from the earliest feedback row's old_value. Without it every
  * correction looks alike; with it an eval can split the edge cases by failure
- * direction — hallucinated headphones (model true, human false) versus missed
- * headphones (model false, human true) — which usually have different causes.
+ * direction (hallucinated headphones, model true and human false, versus missed
+ * headphones, model false and human true), which usually have different causes.
  * A field is omitted when the stored old_value is not a parseable boolean, which
  * is how deliberate labelling runs (no prior model answer) stay out of the
  * direction split instead of being counted as a false negative.
@@ -931,7 +965,7 @@ export async function humanVerifiedCases(
 }
 
 /**
- * How many `human_verified` rows carry NO explicit correctable feedback — the
+ * How many `human_verified` rows carry NO explicit correctable feedback: the
  * owner-confirmed not-working windows (purge-gaming). They are real corrections
  * and stay counted for visibility, but they encode off-task status rather than a
  * physical-presence detector error, so they are excluded from the detector eval
@@ -991,7 +1025,7 @@ export async function updateSnapshotAnalysis(
   `;
 }
 
-/** Stamps the rubric version without changing the reading — for rows whose
+/** Stamps the rubric version without changing the reading, for rows whose
  * thumbnail is gone, so the backfill stops retrying them. Postgres-only. */
 export async function stampRubricVersion(
   id: string,
@@ -1026,7 +1060,7 @@ export async function daysWithData(): Promise<string[]> {
 /**
  * Per-day focus aggregates over the most recent `limit` days that have data,
  * newest first. Each day's `avgScore`/`presentPct` is the mean across its
- * recorded hourly check-ins **within the 8am–11pm scoring window** — hours
+ * recorded hourly check-ins **within the 8am–11pm scoring window**; hours
  * outside it never count toward the day's score. Days with no scoring-window
  * check-ins are absent (the caller renders them as empty cells).
  */
@@ -1290,7 +1324,7 @@ export async function deleteHourlyCheckin(
 }
 
 /**
- * Counts stored rows that fall inside the overnight quiet window — snapshots by
+ * Counts stored rows that fall inside the overnight quiet window: snapshots by
  * their local capture hour, hourly rollups by their stored local hour. The
  * window itself is the single source of truth in lib/time.ts.
  */
@@ -1326,7 +1360,7 @@ export async function countQuietHourData(): Promise<{
 /**
  * Deletes every stored row inside the overnight quiet window and returns how many
  * were removed. Both tables are purged on purpose: leaving the snapshots would let
- * a backfill rebuild the quiet-hour rollups from them. Idempotent — re-running
+ * a backfill rebuild the quiet-hour rollups from them. Idempotent: re-running
  * deletes nothing once the window is clean.
  */
 export async function purgeQuietHourData(): Promise<{
@@ -1439,7 +1473,7 @@ export async function getLedgerEntries(
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
-      SELECT to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, commits, merges
+      SELECT to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, outreach_counts, commits, merges
       FROM scoreboard_entries WHERE day >= ${fromDay} AND day <= ${toDay} ORDER BY day
     `;
     return result.rows.map(mapLedgerEntry);
@@ -1458,22 +1492,14 @@ export async function getLedgerEntries(
  */
 export async function setLedgerEntry(
   day: string,
-  fields: {
-    reachouts?: number;
-    featureDone?: boolean;
-    replies?: number;
-    meetings?: number;
-    connections?: number;
-    followUpsSent?: number;
-    commits?: number;
-    merges?: number;
-  },
+  fields: LedgerDayPatch & { commits?: number; merges?: number },
 ): Promise<LedgerEntry> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
+    const outreachCounts = JSON.stringify(jsonCounts(fields));
     const result = await sql`
-      INSERT INTO scoreboard_entries (day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, commits, merges, updated_at)
-      VALUES (${day}, ${fields.reachouts ?? 0}, ${fields.featureDone ?? false}, ${fields.replies ?? 0}, ${fields.meetings ?? 0}, ${fields.connections ?? 0}, ${fields.followUpsSent ?? 0}, ${fields.commits ?? 0}, ${fields.merges ?? 0}, now())
+      INSERT INTO scoreboard_entries (day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, outreach_counts, commits, merges, updated_at)
+      VALUES (${day}, ${fields.reachouts ?? 0}, ${fields.featureDone ?? false}, ${fields.replies ?? 0}, ${fields.meetings ?? 0}, ${fields.connections ?? 0}, ${fields.followUpsSent ?? 0}, ${outreachCounts}::jsonb, ${fields.commits ?? 0}, ${fields.merges ?? 0}, now())
       ON CONFLICT (day) DO UPDATE SET
         reachouts    = COALESCE(${fields.reachouts ?? null}, scoreboard_entries.reachouts),
         feature_done = COALESCE(${fields.featureDone ?? null}, scoreboard_entries.feature_done),
@@ -1481,10 +1507,11 @@ export async function setLedgerEntry(
         meetings     = COALESCE(${fields.meetings ?? null}, scoreboard_entries.meetings),
         connections  = COALESCE(${fields.connections ?? null}, scoreboard_entries.connections),
         follow_ups_sent = COALESCE(${fields.followUpsSent ?? null}, scoreboard_entries.follow_ups_sent),
+        outreach_counts = scoreboard_entries.outreach_counts || ${outreachCounts}::jsonb,
         commits      = COALESCE(${fields.commits ?? null}, scoreboard_entries.commits),
         merges       = COALESCE(${fields.merges ?? null}, scoreboard_entries.merges),
         updated_at   = now()
-      RETURNING to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, commits, merges
+      RETURNING to_char(day, 'YYYY-MM-DD') AS day, reachouts, feature_done, replies, meetings, connections, follow_ups_sent, outreach_counts, commits, merges
     `;
     return mapLedgerEntry(result.rows[0]);
   }
@@ -1493,16 +1520,16 @@ export async function setLedgerEntry(
     const entries = state.scoreboardEntries ?? [];
     const existing = entries.find((entry) => entry.day === day);
     const next: LedgerEntry = {
+      ...readManualCounts(existing ?? {}),
       day,
-      reachouts: fields.reachouts ?? existing?.reachouts ?? 0,
       featureDone: fields.featureDone ?? existing?.featureDone ?? false,
-      replies: fields.replies ?? existing?.replies ?? 0,
-      meetings: fields.meetings ?? existing?.meetings ?? 0,
-      connections: fields.connections ?? existing?.connections ?? 0,
-      followUpsSent: fields.followUpsSent ?? existing?.followUpsSent ?? 0,
       commits: fields.commits ?? existing?.commits ?? 0,
       merges: fields.merges ?? existing?.merges ?? 0,
     };
+    for (const field of MANUAL_COUNT_FIELDS) {
+      const value = fields[field];
+      if (value !== undefined) next[field] = value;
+    }
     state.scoreboardEntries = [
       ...entries.filter((entry) => entry.day !== day),
       next,
@@ -1514,7 +1541,7 @@ export async function setLedgerEntry(
 /**
  * Appends one line to the two-way nudge conversation. Postgres assigns the UUID
  * and default timestamp; the local branch stamps both so the shapes match.
- * Append-only — there is no update or delete path (see plan: retention later).
+ * Append-only: there is no update or delete path (see plan: retention later).
  */
 export async function appendNudgeMessage(m: {
   direction: "out" | "in";
@@ -1552,7 +1579,7 @@ export async function getWeeklyGoals(): Promise<WeeklyGoal[]> {
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
-      SELECT to_char(week_start, 'YYYY-MM-DD') AS week_start, reachouts, hours
+      SELECT to_char(week_start, 'YYYY-MM-DD') AS week_start, reachouts, hours, emails, connection_requests
       FROM weekly_goals ORDER BY week_start
     `;
     return result.rows.map(mapWeeklyGoal);
@@ -1565,33 +1592,36 @@ export async function getWeeklyGoals(): Promise<WeeklyGoal[]> {
 }
 
 /**
- * Saves one effective-dated weekly goal. The row applies from `weekStart`
- * forward until a later row; no other week row is changed.
+ * Saves one effective-dated, per-channel weekly goal. The row applies from
+ * `weekStart` forward until a later row; no other week row is changed.
  *
- * Preconditions: `weekStart` is a Monday YYYY-MM-DD, `reachouts` is an integer
- * >= 1, and `hours` is finite and >= 0.1. Postcondition: a subsequent
- * `getWeeklyGoals` returns the supplied values for exactly that week.
+ * Preconditions: the arguments pass `validateWeeklyGoal`. Postcondition: a
+ * subsequent `getWeeklyGoals` returns the supplied values for exactly that
+ * week, with `reachouts` = emails + connectionRequests.
  */
 export async function setWeeklyGoal(
   weekStart: string,
-  reachouts: number,
+  emails: number,
+  connectionRequests: number,
   hours: number,
 ): Promise<WeeklyGoal> {
-  const validation = validateWeeklyGoal(weekStart, reachouts, hours);
+  const validation = validateWeeklyGoal(weekStart, emails, connectionRequests, hours);
   if (!validation.ok) {
     throw new Error(validation.error);
   }
-  const goal = { weekStart, reachouts, hours };
+  const goal = channelWeeklyGoal(weekStart, emails, connectionRequests, hours);
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
-      INSERT INTO weekly_goals (week_start, reachouts, hours, updated_at)
-      VALUES (${weekStart}, ${reachouts}, ${hours}, now())
+      INSERT INTO weekly_goals (week_start, reachouts, hours, emails, connection_requests, updated_at)
+      VALUES (${weekStart}, ${goal.reachouts}, ${hours}, ${emails}, ${connectionRequests}, now())
       ON CONFLICT (week_start) DO UPDATE SET
         reachouts = EXCLUDED.reachouts,
         hours = EXCLUDED.hours,
+        emails = EXCLUDED.emails,
+        connection_requests = EXCLUDED.connection_requests,
         updated_at = now()
-      RETURNING to_char(week_start, 'YYYY-MM-DD') AS week_start, reachouts, hours
+      RETURNING to_char(week_start, 'YYYY-MM-DD') AS week_start, reachouts, hours, emails, connection_requests
     `;
     return mapWeeklyGoal(result.rows[0]);
   }
