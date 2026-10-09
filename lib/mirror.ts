@@ -262,6 +262,32 @@ export async function readMirror(day?: string, now = new Date(), io = archiveIO)
 }
 
 /**
+ * Opens the deployed home on today, or an explicitly identified saved day when
+ * today has no publication. Explicit date requests remain exact and never fall
+ * back. `missingDay` must be displayed whenever a different day is returned;
+ * snapshot dates, images, statistics, and publication time are never rewritten.
+ * Only retained archive days are eligible. Storage failures return no snapshot.
+ */
+export async function readHomeMirror(day?: string, now = new Date(), io = archiveIO): Promise<{
+  snapshot: MirrorSnapshot | null;
+  missingDay: string | null;
+}> {
+  const snapshot = await readMirror(day, now, io);
+  if (snapshot || day !== undefined) return { snapshot, missingDay: null };
+  const missingDay = localDayKey(now);
+  try {
+    const savedDays = await listArchivedDays(now, io);
+    const lastSavedDay = savedDays.find((savedDay) => savedDay < missingDay);
+    return {
+      snapshot: lastSavedDay ? await readMirror(lastSavedDay, now, io) : null,
+      missingDay,
+    };
+  } catch {
+    return { snapshot: null, missingDay };
+  }
+}
+
+/**
  * Last capture publication, regardless of day/retention. For Ledger and status,
  * never for a requested dashboard day. Camera downtime cannot prevent editing:
  * rebuilds Ledger through actual today before applying current owner overrides.

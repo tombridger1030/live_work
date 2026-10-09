@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { validateWeeklyGoal, WEEKLY_GOAL_MAX_HOURS, WEEKLY_GOAL_MAX_REACHOUTS, WEEKLY_GOAL_MIN_HOURS, WEEKLY_GOAL_MIN_REACHOUTS } from "@/lib/weekly-goal";
 import { cn } from "@/lib/utils";
+import { LedgerOwnerAccess } from "@/components/LedgerOwnerAccess";
 
 export type WeeklyGoalOption = {
   weekStart: string;
@@ -43,9 +44,6 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
   const [hoursDraft, setHoursDraft] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveMessage, setSaveMessage] = useState("");
-  const [secretDraft, setSecretDraft] = useState("");
-  const [authState, setAuthState] = useState<"idle" | "saving" | "error">("idle");
-  const [authMessage, setAuthMessage] = useState("");
 
   const selectedWeek = weeks.find((week) => week.weekStart === selectedWeekStart) ?? weeks[weeks.length - 1] ?? null;
   const selectedWeekKey = selectedWeek?.weekStart ?? null;
@@ -94,29 +92,6 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
     }
   }
 
-  async function handleAuthenticate() {
-    if (!secretDraft) {
-      setAuthState("error");
-      setAuthMessage("Enter the Vercel Production owner secret.");
-      return;
-    }
-    setAuthState("saving");
-    setAuthMessage("");
-    try {
-      await onAuthenticate(secretDraft);
-      setSecretDraft("");
-      setAuthState("idle");
-      setSaveState("idle");
-      setSaveMessage("Editing unlocked. Save the goals again.");
-    } catch (error) {
-      setAuthState("error");
-      setAuthMessage(
-        error instanceof Error && error.message === "AUTH_RATE_LIMITED"
-          ? "Too many attempts. Wait a few minutes, then try again."
-          : "Vercel Production did not accept that secret. Your local .env.local may contain a different OWNER_SECRET.",
-      );
-    }
-  }
 
   return (
     <section className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.2)] sm:p-5">
@@ -185,29 +160,8 @@ export function WeeklyGoalsEditor({ weeks, initialWeekStart, sessionRequired, on
       ) : null}
 
       {sessionRequired ? (
-        <div className="mt-4 border-t border-white/[0.06] pt-4">
-          <p className="text-xs text-zinc-400">Owner access is required to save ledger changes.</p>
-          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-            <Input
-              aria-label="Owner secret"
-              className="border-white/[0.1] bg-black/30 text-zinc-100 sm:max-w-xs"
-              type="password"
-              autoComplete="current-password"
-              placeholder="Owner secret"
-              value={secretDraft}
-              onChange={(event) => setSecretDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void handleAuthenticate();
-                }
-              }}
-            />
-            <Button type="button" size="sm" variant="outline" disabled={authState === "saving"} onClick={() => void handleAuthenticate()}>
-              {authState === "saving" ? "Unlocking…" : "Unlock editing"}
-            </Button>
-          </div>
-          {authState === "error" ? <p className="mt-2 text-xs text-rose-300" role="alert">{authMessage}</p> : null}
+        <div className="mt-4">
+          <LedgerOwnerAccess onAuthenticate={onAuthenticate} />
         </div>
       ) : null}
     </section>

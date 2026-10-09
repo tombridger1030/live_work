@@ -30,6 +30,7 @@ import { RUBRIC_VERSION } from "@/lib/score";
 import { correctableFields, type CorrectableField } from "@/lib/feedback";
 import { validateWeeklyGoal } from "@/lib/weekly-goal";
 import { sql } from "@/lib/sql";
+import { assertStorageMounted } from "@/lib/storage-availability";
 
 type SaveSnapshotInput = {
   capturedAt?: Date;
@@ -118,6 +119,7 @@ function normalizeCheckin(checkin: HourlyCheckin): HourlyCheckin {
 }
 
 async function readLocalState(): Promise<LocalState> {
+  await assertStorageMounted(localRoot);
   if (!existsSync(localStoreFile)) {
     return defaultState();
   }
@@ -137,6 +139,7 @@ async function readLocalState(): Promise<LocalState> {
 }
 
 async function writeLocalState(state: LocalState): Promise<void> {
+  await assertStorageMounted(localRoot);
   await mkdir(localRoot, { recursive: true });
   // Atomic write: a unique temp file + rename so concurrent writers never leave
   // the store half-written (which would crash every reader on JSON.parse).

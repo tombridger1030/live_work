@@ -452,7 +452,7 @@ export function Dashboard({
   // the one rendered, force a real reload; soft router.refresh() has proven too
   // weak for this live dashboard path.
   useEffect(() => {
-    if (!data.isToday || data.settings.paused) return;
+    if ((!data.isToday && !mirror?.awaitingToday) || data.settings.paused) return;
 
     let checking = false;
     let reloading = false;

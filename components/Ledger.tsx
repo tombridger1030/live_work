@@ -696,6 +696,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
         className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-4 py-4 [scrollbar-gutter:stable]"
       >
         <LedgerDayReport
+          sessionRequired={sessionRequired}
+          onAuthenticate={authenticateOwner}
           day={selectedDayData}
           reachouts={selectedReachouts}
           onReachoutsChange={handleReachoutsChange}

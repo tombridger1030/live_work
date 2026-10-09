@@ -11,6 +11,7 @@ import type {
 import { isQuietNow, minutesSince } from "@/lib/time";
 import { localDataRoot } from "@/lib/store";
 import { captureAlertAfterMinutes } from "@/lib/capture-thresholds";
+import { assertStorageMounted } from "@/lib/storage-availability";
 
 export { captureAlertAfterMinutes } from "@/lib/capture-thresholds";
 
@@ -41,6 +42,7 @@ function safeFailureMessage(message: string | null | undefined): string | null {
 }
 
 async function writeHealth(health: CaptureHealth): Promise<void> {
+  await assertStorageMounted(localDataRoot());
   const target = healthFile();
   await mkdir(path.dirname(target), { recursive: true });
   const temporary = `${target}.${Date.now()}.tmp`;
@@ -55,8 +57,9 @@ async function writeHealth(health: CaptureHealth): Promise<void> {
  */
 export async function readCaptureHealth(): Promise<CaptureHealth> {
   const target = healthFile();
-  if (!existsSync(target)) return emptyCaptureHealth();
   try {
+    await assertStorageMounted(localDataRoot());
+    if (!existsSync(target)) return emptyCaptureHealth();
     const parsed = JSON.parse(await readFile(target, "utf8")) as Partial<CaptureHealth>;
     return {
       ...emptyCaptureHealth(),

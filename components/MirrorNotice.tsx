@@ -5,6 +5,8 @@ import type { CaptureFreshness, CaptureHealth } from "@/lib/types";
 import { captureAlertAfterMinutes } from "@/lib/capture-thresholds";
 
 export type MirrorView = {
+  /** Home shows an identified saved day while waiting for today's first publish. */
+  awaitingToday?: boolean;
   /** Last successful publication, not evidence of the Mac's capture state. */
   publishedAt: string;
   captureHealth: CaptureHealth;
@@ -24,13 +26,13 @@ export function MirrorNotice({ publishedAt, captureHealth, captureFreshness }: M
   const minutes = now === null ? null : Math.max(0, Math.floor((now - Date.parse(publishedAt)) / 60_000));
   const age = minutes === null ? "" : minutes < 1 ? "just now" : minutes < 60 ? `${minutes} min ago` : minutes < 1440 ? `${Math.floor(minutes / 60)} hr ago` : `${Math.floor(minutes / 1440)} days ago`;
   const clock = now ?? Date.parse(publishedAt);
-  const imageAge = captureHealth.lastImageAt
+  const imageAge = now === null ? captureFreshness.imageAgeMinutes : captureHealth.lastImageAt
     ? Math.max(0, Math.floor((clock - Date.parse(captureHealth.lastImageAt)) / 60_000))
     : null;
   const imageAgeText = imageAge === null
     ? "never"
     : imageAge < 1 ? "just now" : imageAge < 60 ? `${imageAge} min ago` : imageAge < 1440 ? `${Math.floor(imageAge / 60)} hr ago` : `${Math.floor(imageAge / 1440)} days ago`;
-  const attemptAge = captureHealth.lastAttemptAt
+  const attemptAge = now === null ? captureFreshness.attemptAgeMinutes : captureHealth.lastAttemptAt
     ? Math.max(0, Math.floor((clock - Date.parse(captureHealth.lastAttemptAt)) / 60_000))
     : null;
   const stale = captureFreshness.expected && (

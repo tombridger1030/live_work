@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import sharp from "sharp";
 import { archiveFrame, archiveIncludes, archiveIO, archivePath, cleanupArchive, listArchivedDays, readArchiveAsset } from "@/lib/mirror-archive";
-import { buildMirrorDashboardCopy, publishMirror, readMirror, readLatestMirror } from "@/lib/mirror";
+import { buildMirrorDashboardCopy, publishMirror, readMirror, readLatestMirror, readHomeMirror } from "@/lib/mirror";
 import { assembleLedger, dayRange } from "@/lib/ledger";
 import { mirrorLedgerForToday } from "@/lib/mirror-ledger";
 import { applyLedgerOverrides } from "@/lib/ledger-overrides";
@@ -33,6 +33,31 @@ function dashboard(day = "2026-09-03"): DashboardData {
   return { viewDay: day, today: day, isToday: true, dataDays: [day], latest: null,
     settings: { paused: false }, hourlyFrames: {}, hourly: [], defaultHour: null } as unknown as DashboardData;
 }
+
+test("home outage opens an identified saved day without relabeling its images or totals", async () => {
+  const { io, objects } = memoryStore();
+  const saved = { publishedAt: "2026-09-03T23:00:00Z", data: { ...dashboard(), stats: { hoursPresent: 7 }, latest: { id: "saved-image", capturedAt: "2026-09-03T22:00:00Z" } } };
+  objects.set(archivePath("2026-09-03"), JSON.stringify(saved));
+  objects.set("mirror/dashboard.json", JSON.stringify(saved));
+  const home = await readHomeMirror(undefined, now, io);
+  expect(home.missingDay).toBe("2026-09-04");
+  expect(home.snapshot?.data.viewDay).toBe("2026-09-03");
+  expect(home.snapshot?.data.isToday).toBe(false);
+  expect(home.snapshot?.data.stats.hoursPresent).toBe(7);
+  expect(home.snapshot?.data.latest?.id).toBe("saved-image");
+  expect(home.snapshot?.publishedAt).toBe(saved.publishedAt);
+  expect((await readHomeMirror("2026-09-04", now, io)).snapshot).toBeNull();
+});
+
+test("home prefers today's publication and does not fall back outside archive retention", async () => {
+  const { io, objects } = memoryStore();
+  objects.set(archivePath("2026-08-01"), JSON.stringify({ data: dashboard("2026-08-01") }));
+  expect((await readHomeMirror(undefined, now, io)).snapshot).toBeNull();
+  objects.set(archivePath("2026-09-04"), JSON.stringify({ data: dashboard("2026-09-04") }));
+  const home = await readHomeMirror(undefined, now, io);
+  expect(home.missingDay).toBeNull();
+  expect(home.snapshot?.data.isToday).toBe(true);
+});
 
 test("archive window uses real local today and 30 calendar dates including DST", () => {
   expect(archiveIncludes("2026-08-06", now)).toBe(true);

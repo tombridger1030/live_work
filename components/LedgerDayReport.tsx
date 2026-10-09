@@ -4,6 +4,7 @@ import { NumberField } from "@heroui/react";
 import { Minus, Plus, RotateCcw } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { Num } from "@/components/Num";
+import { LedgerOwnerAccess } from "@/components/LedgerOwnerAccess";
 import { appSpring, motionTransition } from "@/components/MotionPrimitives";
 import type { LedgerDay } from "@/lib/ledger";
 import { progressState, statusTone } from "@/lib/ledger-ui";
@@ -12,6 +13,8 @@ import { cn } from "@/lib/utils";
 export type SaveState = "idle" | "saving" | "error";
 
 export type LedgerDayReportProps = {
+  sessionRequired: boolean;
+  onAuthenticate: (secret: string) => Promise<void>;
   day: LedgerDay;
   reachouts: number;
   onReachoutsChange: (value: number) => void;
@@ -114,6 +117,8 @@ function CountField({
 // One day's report surface: debounced logging, optimistic status, and inline retry
 // states instead of silent failure.
 export function LedgerDayReport({
+  sessionRequired,
+  onAuthenticate,
   day,
   reachouts,
   onReachoutsChange,
@@ -146,6 +151,7 @@ export function LedgerDayReport({
 
   return (
     <div className="space-y-3">
+      {sessionRequired ? <LedgerOwnerAccess onAuthenticate={onAuthenticate} /> : null}
       <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4">
         <div className="flex items-center justify-between">
           <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-500">Touches</p>
