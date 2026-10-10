@@ -226,6 +226,16 @@ function dueDetail(
   };
 }
 
+// Answers owed count toward the day's goals, so the row says so.
+function answerDetail(value: number, due: number | undefined): { detail?: string; detailState?: ProgressState } {
+  if (due === undefined) return {};
+  if (due === 0) return { detail: "Everyone answered" };
+  return {
+    detail: `${Math.min(value, due)} of ${due} to answer · counts toward goals`,
+    detailState: progressState(value, due),
+  };
+}
+
 /**
  * One day's log, grouped the way outreach actually happens: Email, then
  * LinkedIn, each with its inputs first and outcomes after. Bars and due counts
@@ -240,20 +250,20 @@ export function LedgerDayReport({
   onCountRetry,
 }: LedgerDayReportProps) {
   const rowProps = { saveStateOf, onCountChange, onCountRetry };
-  const bar = day.targets.outreach;
+  const bar = day.targets?.outreach ?? null;
+  const hoursTarget = day.targets?.hours ?? null;
   const channelBars = bar?.kind === "channels" ? bar : null;
   const touchesBar = bar?.kind === "touches" ? bar : null;
   const touchesToday = bar ? outreachDone(outreachTally(day), bar) : 0;
   const unsplitFields = UNSPLIT_COUNT_FIELDS.filter((field) => day[field] > 0);
-  const hoursState = progressState(day.hours, day.targets.hours);
+  const hoursState = hoursTarget === null ? null : progressState(day.hours, hoursTarget);
 
   return (
     <div className="space-y-3">
       {sessionRequired ? <LedgerOwnerAccess onAuthenticate={onAuthenticate} /> : null}
       {bar === null ? (
         <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-xs leading-5 text-zinc-400">
-          Weekend. There's no outreach goal today; anything you log still counts
-          toward the week.
+          Weekend: no goals. Hours, follow-ups, and anything else you log count toward the week as extra work.
         </p>
       ) : null}
 
@@ -316,14 +326,21 @@ export function LedgerDayReport({
           {...dueDetail(
             day.emailFollowUps,
             day.due?.emailFollowUps,
-            "sent 3 weekdays ago",
+            "emails 3+ weekdays old",
           )}
           {...rowProps}
         />
         <CountRow
           field="emailReplies"
-          label="Replies"
+          label="Replies received"
           value={day.emailReplies}
+          {...rowProps}
+        />
+        <CountRow
+          field="emailRepliesAnswered"
+          label="Replies answered"
+          value={day.emailRepliesAnswered}
+          {...answerDetail(day.emailRepliesAnswered, day.due?.emailRepliesAnswered)}
           {...rowProps}
         />
         <CountRow
@@ -370,8 +387,15 @@ export function LedgerDayReport({
         />
         <CountRow
           field="linkedinReplies"
-          label="Replies"
+          label="Replies received"
           value={day.linkedinReplies}
+          {...rowProps}
+        />
+        <CountRow
+          field="linkedinRepliesAnswered"
+          label="Replies answered"
+          value={day.linkedinRepliesAnswered}
+          {...answerDetail(day.linkedinRepliesAnswered, day.due?.linkedinRepliesAnswered)}
           {...rowProps}
         />
         <CountRow
@@ -406,33 +430,24 @@ export function LedgerDayReport({
 
       <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4">
         <div className="flex items-center justify-between">
-          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-500">
-            Hours
-          </p>
-          <span
-            className={cn(
-              "text-xs font-medium capitalize",
-              statusTone(hoursState),
-            )}
-          >
-            {hoursState}
-          </span>
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-500">Hours</p>
+          {hoursState ? (
+            <span className={cn("text-xs font-medium capitalize", statusTone(hoursState))}>{hoursState}</span>
+          ) : (
+            <span className="text-xs text-zinc-500">Extra</span>
+          )}
         </div>
         <div className="mt-2 flex items-end gap-2">
-          <Num className="text-2xl font-semibold leading-none text-zinc-50">
-            {day.hours.toFixed(1)}
-          </Num>
+          <Num className="text-2xl font-semibold leading-none text-zinc-50">{day.hours.toFixed(1)}</Num>
           <span className="pb-0.5 text-sm text-zinc-500">
-            / {day.targets.hours.toFixed(1)} · auto from Tally
+            {hoursTarget === null ? "no goal on weekends" : `/ ${hoursTarget.toFixed(1)}`} · auto from Tally
           </span>
         </div>
-        <div className="mt-2">
-          <Bar
-            value={day.hours}
-            target={day.targets.hours}
-            gradient={HOURS_GRADIENT}
-          />
-        </div>
+        {hoursTarget !== null ? (
+          <div className="mt-2">
+            <Bar value={day.hours} target={hoursTarget} gradient={HOURS_GRADIENT} />
+          </div>
+        ) : null}
       </section>
     </div>
   );

@@ -34,6 +34,14 @@ test("the bar splits what is left over the weekdays left, rounded up", () => {
   expect(catchUpBar(150, 0, "2026-10-09")).toBe(150); // Friday, nothing sent: no cap
 });
 
+test("hours spread over every day left through Sunday, rounded up to a tenth", () => {
+  const hours = { decimals: 1, spreadOver: "week" } as const;
+  expect(catchUpBar(55, 0, "2026-10-05", hours)).toBe(7.9); // fresh Monday: 55 / 7 = 7.86
+  expect(catchUpBar(55, 9.5, "2026-10-07", hours)).toBe(9.1); // Wednesday: 45.5 / 5
+  expect(catchUpBar(55, 30, "2026-10-09", hours)).toBe(8.4); // Friday: 25 / 3, the weekend shares it
+  expect(catchUpBar(55, 0, "2026-10-10", hours)).toBeNull(); // weekends have no bar
+});
+
 test("ahead of pace asks for nothing, weekends ask for nothing at all", () => {
   expect(catchUpBar(150, 160, "2026-10-08")).toBe(0);
   expect(catchUpBar(150, 0, "2026-10-10")).toBeNull();

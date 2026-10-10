@@ -148,7 +148,7 @@ test("a snapshot published by an older Mac build still rebuilds with its goals a
   expect(rebuilt.days[0].reachouts).toBe(22);
   expect(rebuilt.days[0].connections).toBe(2);
   expect(rebuilt.days[0].emailsSent).toBe(0);
-  expect(rebuilt.days[3].targets.outreach).toEqual({ kind: "touches", touches: 64 }); // (150 - 22) / 2
+  expect(rebuilt.days[3].targets?.outreach).toEqual({ kind: "touches", touches: 64 }); // (150 - 22) / 2
 });
 
 test("compact image stored once across repeated publishes, publicly served without Blob URL", async () => {

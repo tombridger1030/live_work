@@ -9,11 +9,11 @@ import type { LedgerDay } from "@/lib/ledger";
 
 const sampleDay: LedgerDay = {
   ...readManualCounts({ reachouts: 30, emailsSent: 4, connectionRequests: 2 }),
-  day: "2026-06-28",
+  day: "2026-06-26",
   index: 1,
-  label: "Jun 28",
-  dayOfMonth: 28,
-  weekdayLabel: "Sun",
+  label: "Jun 26",
+  dayOfMonth: 26,
+  weekdayLabel: "Fri",
   monthKey: "2026-06",
   monthLabel: "Jun",
   inRange: true,
@@ -22,9 +22,10 @@ const sampleDay: LedgerDay = {
   featureDone: true,
   commits: 0,
   merges: 0,
-  targets: { outreach: null, hours: 70 / 7 },
+  targets: { outreach: { kind: "touches", touches: 36 }, hours: 10 },
   due: null,
   dailyValue: 100,
+  scoreParts: { goals: 70, hours: 30 },
   active: true,
 };
 
@@ -53,10 +54,13 @@ test("daily trend keeps duplicate day numbers on unique full-date coordinates", 
 
 test("ledgerDayAriaLabel exposes the raw day facts for assistive tech", () => {
   expect(ledgerDayAriaLabel(sampleDay)).toBe(
-    "Sun Jun 28: 100 activity points, 36 touches, 10.5 hours",
+    "Fri Jun 26: 100 activity points, 36 touches, 10.5 hours",
   );
   expect(ledgerDayAriaLabel({ ...sampleDay, state: "future" })).toBe(
-    "Sun Jun 28, future day",
+    "Fri Jun 26, future day",
   );
   expect(ledgerDayAriaLabel({ ...sampleDay, featureDone: false })).toBe(ledgerDayAriaLabel(sampleDay));
+  expect(ledgerDayAriaLabel({ ...sampleDay, weekdayLabel: "Sat", label: "Jun 27", targets: null, dailyValue: null, scoreParts: null, hours: 2 })).toBe(
+    "Sat Jun 27: weekend, 2.0 extra hours, 36 touches",
+  );
 });

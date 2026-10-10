@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readManualCounts, type ManualCounts } from "@/lib/ledger-fields";
 import {
   buildOutreachFunnel,
-  followUpsDue,
+  dueToday,
   splitStartDay,
 } from "@/lib/outreach-funnel";
 import { dayRange } from "@/lib/ledger";
@@ -33,7 +33,7 @@ test("pre-split history never starts the pipeline", () => {
   expect(funnel.headline).toBe(
     "Starts when you log your first email or LinkedIn request.",
   );
-  expect(followUpsDue(history, history.length - 1, null)).toBeNull();
+  expect(dueToday(history, history.length - 1, null)).toBeNull();
 });
 
 test("the window starts at the split, so earlier acceptances cannot read as unmessaged", () => {
@@ -115,22 +115,48 @@ test("the window is the last 28 days", () => {
   expect(funnel.emailFollowUps).toBe(4);
 });
 
-test("email follow-ups fall due three weekdays after the send", () => {
-  // Mon Oct 5 -> Thu Oct 8; Wed Oct 7 -> Mon Oct 12 (skips the weekend).
+test("email follow-ups fall due three weekdays after the send and stay due until sent", () => {
+  // Mon Oct 5 -> due Thu Oct 8; Wed Oct 7 -> due Mon Oct 12 (skips the weekend).
   const history = days("2026-10-05", "2026-10-12", {
     "2026-10-05": { emailsSent: 30 },
     "2026-10-07": { emailsSent: 25 },
+    "2026-10-09": { emailFollowUps: 10 },
   });
   const dueOn = (day: string) =>
-    followUpsDue(
-      history,
-      history.findIndex((entry) => entry.day === day),
-      "2026-10-05",
-    );
-  expect(dueOn("2026-10-08")?.emailFollowUps).toBe(30);
-  expect(dueOn("2026-10-09")?.emailFollowUps).toBe(0);
-  expect(dueOn("2026-10-12")?.emailFollowUps).toBe(25);
-  expect(dueOn("2026-10-10")).toBeNull(); // Saturday: nothing is due
+    dueToday(history, history.findIndex((entry) => entry.day === day), "2026-10-05")?.emailFollowUps;
+  expect(dueOn("2026-10-07")).toBe(0); // nothing is three weekdays old yet
+  expect(dueOn("2026-10-08")).toBe(30);
+  expect(dueOn("2026-10-09")).toBe(30); // Thursday sent none: the 30 carry over
+  expect(dueOn("2026-10-10")).toBe(20); // Saturday shows what is left for catch-up
+  expect(dueOn("2026-10-12")).toBe(45); // Wednesday's 25 join the 20 still owed
+});
+
+test("replies stay to answer until answered, per channel", () => {
+  const history = days("2026-10-05", "2026-10-10", {
+    "2026-10-05": { emailsSent: 20, emailReplies: 3, linkedinReplies: 2 },
+    "2026-10-06": { emailRepliesAnswered: 1 },
+    "2026-10-07": { linkedinReplies: 1 },
+    "2026-10-08": { emailRepliesAnswered: 2, linkedinRepliesAnswered: 1 },
+  });
+  const dueOn = (day: string) => dueToday(history, history.findIndex((entry) => entry.day === day), "2026-10-05");
+  expect(dueOn("2026-10-05")).toMatchObject({ emailRepliesAnswered: 3, linkedinRepliesAnswered: 2 });
+  expect(dueOn("2026-10-07")).toMatchObject({ emailRepliesAnswered: 2, linkedinRepliesAnswered: 3 });
+  // Thursday's own answers count as done, never as less due.
+  expect(dueOn("2026-10-08")).toMatchObject({ emailRepliesAnswered: 2, linkedinRepliesAnswered: 3 });
+  expect(dueOn("2026-10-09")).toMatchObject({ emailRepliesAnswered: 0, linkedinRepliesAnswered: 2 });
+  expect(dueOn("2026-10-10")).toMatchObject({ linkedinRepliesAnswered: 2 }); // weekends show it too
+});
+
+test("weekends show the backlog instead of nothing", () => {
+  const history = days("2026-10-05", "2026-10-11", {
+    "2026-10-05": { connectionRequests: 30, connections: 6, emailsSent: 12 },
+  });
+  expect(dueToday(history, 5, "2026-10-05")).toEqual({
+    emailFollowUps: 12,
+    linkedinMessages: 6,
+    emailRepliesAnswered: 0,
+    linkedinRepliesAnswered: 0,
+  });
 });
 
 test("LinkedIn first messages due are acceptances not yet messaged", () => {
@@ -139,7 +165,7 @@ test("LinkedIn first messages due are acceptances not yet messaged", () => {
     "2026-10-06": { connections: 3, linkedinMessages: 4 },
     "2026-10-08": { connections: 2, linkedinMessages: 1 },
   });
-  const due = followUpsDue(history, 3, "2026-10-05");
+  const due = dueToday(history, 3, "2026-10-05");
   // 9 accepted through today, 4 messaged before today: 5 due; today's 1 counts as done, not as due.
   expect(due?.linkedinMessages).toBe(5);
 });

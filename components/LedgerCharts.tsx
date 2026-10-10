@@ -18,7 +18,7 @@ type DailyRow = {
   day: string;
   label: string;
   dailyValue: number;
-  movingAverage7: number | null;
+  weekAverage: number | null;
 };
 
 type WeeklyRow = {
@@ -128,7 +128,7 @@ export function LedgerCharts({ mode, dailyRows, weeklyRows, selectedDay, reduceM
                     <p className="font-medium text-zinc-100">{point.label}</p>
                     <div className="mt-2 space-y-1 text-zinc-400">
                       <div className="flex justify-between gap-6"><span>Activity score</span><span className="font-mono text-zinc-100">{point.dailyValue}</span></div>
-                      <div className="flex justify-between gap-6"><span>7-day avg</span><span className="font-mono text-zinc-100">{point.movingAverage7 ?? "–"}</span></div>
+                      <div className="flex justify-between gap-6"><span>Week avg</span><span className="font-mono text-zinc-100">{point.weekAverage ?? "–"}</span></div>
                     </div>
                   </div>
                 );
@@ -137,7 +137,7 @@ export function LedgerCharts({ mode, dailyRows, weeklyRows, selectedDay, reduceM
             <ReferenceLine y={100} stroke="rgba(255,255,255,0.16)" strokeDasharray="4 4" />
             <Line
               type="monotone"
-              dataKey="movingAverage7"
+              dataKey="weekAverage"
               stroke="#a1a1aa"
               strokeDasharray="5 5"
               strokeWidth={1.5}

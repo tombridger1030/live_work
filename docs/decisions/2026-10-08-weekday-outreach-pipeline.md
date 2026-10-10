@@ -20,6 +20,11 @@ replies, meetings), and whether low replies mean the message is wrong.
   trailing 28 days against the owner's targets (30-40% accept, 50% reply, 50%
   meet).
 - Fix 1 contract accepted as proposed; hours stay spread over seven days.
+- Amended 2026-10-09 (decision A, "weekdays are the plan"): weekends carry
+  no goals and no score, and unsent email follow-ups stay due until sent. The
+  weekly hours goal stays 55 and, per the owner, spans all seven days: hours
+  catch up over every day left through Sunday, so weekend hours count toward
+  it.
 
 ## Contracts
 
@@ -29,6 +34,10 @@ replies, meetings), and whether low replies mean the message is wrong.
 bar(day) = ceil(max(0, weeklyGoal - loggedEarlierThisWeek) / weekdaysLeft(day))
 weekdaysLeft(Mon..Fri) = 5, 4, 3, 2, 1        bar(Sat|Sun) = none
 ```
+
+Hours use the same rule spread over every day left through Sunday, since the
+weekly hours goal includes the weekend, rounded up to a tenth of an hour
+(55 h: 7.9 on a fresh Monday; Friday shares what is left with the weekend).
 
 - Depends only on earlier days of the same week, so it never moves while the
   owner logs the day itself. Editing an earlier day re-derives later bars.
@@ -40,13 +49,27 @@ weekdaysLeft(Mon..Fri) = 5, 4, 3, 2, 1        bar(Sat|Sun) = none
 
 ### Activity score (`lib/ledger.ts`)
 
-- Weekday: outreach 4/7 + hours 3/7, each capped at its bar (unchanged weights).
-- Weekend: hours only. Without this, a bar of 0 would give every Saturday 4/7
-  for free.
-- Channel weeks: outreach progress is `(min(emails, emailBar) +
-min(requests, requestBar)) / (emailBar + requestBar)`, so one channel cannot
-  cover for the other. Outputs (accepts, replies, meetings) never touch the
-  score.
+Amended 2026-10-09 by the owner: "if I complete all the goals ... I should
+get a 70%. Then the 30% is dependent on how many hours I work that day."
+
+- Weekday, goals (70 points): every send the day requires counts once: new
+  outreach against its catch-up bar (touches, or emails and requests per
+  channel) plus answers owed to prospects who replied on email or LinkedIn
+  (owner, 2026-10-09: "replying to people who have responded"). Each kind is
+  capped at its own number, so extra emails never cover unanswered replies.
+  Follow-ups stay a to-do and never touch the score. Nothing required counts
+  as done.
+- Weekday, hours (30 points): hours against the day's hours bar, capped.
+- The two parts are whole numbers that add up to the score, and the day report
+  shows them ("Goals 54 of 70 · Hours 30 of 30").
+- Week: 70 for new outreach against the weekly goal, 30 for hours. Follow-ups
+  are judged day by day, where their due counts exist.
+- Weekend: no targets and no score (`targets`, `dailyValue`, `scoreParts` are
+  null). The board shows the hours worked; an idle weekend stays neutral and
+  never breaks the active-day streak. Weekend hours, follow-ups, and touches
+  still count toward the week's totals.
+- Weekday averages and the daily trend cover Monday to Friday only.
+- Outputs (accepts, replies received, meetings) never touch the score.
 
 ### Stored counts (`lib/ledger-fields.ts`)
 
@@ -55,11 +78,14 @@ store, the mirror, and the UI iterate it, so adding a count is one edit.
 
 ```text
 before the split (no channel): reachouts ("touches"), replies, meetings, followUpsSent
-email:    emailsSent, emailFollowUps, emailReplies, emailMeetings
+email:    emailsSent, emailFollowUps, emailReplies, emailRepliesAnswered,
+          emailMeetings
 linkedin: connectionRequests, connections ("accepted"), linkedinMessages,
-          linkedinReplies, linkedinMeetings
+          linkedinReplies, linkedinRepliesAnswered, linkedinMeetings
 ```
 
+- `...Replies` are replies received from prospects; `...RepliesAnswered` are
+  the owner's answers to them (added 2026-10-09).
 - `connections` keeps its storage key and becomes LinkedIn "accepted"; the 26
   logged on Sep 16-18 were LinkedIn acceptances.
 - `followUpsSent`, `replies`, `meetings`, and `reachouts` have no channel and
@@ -96,13 +122,18 @@ Email:    sent -> replied -> meeting           (no targets until the owner sets 
   "Messaged" comes before "replied" so a sending gap is never blamed on the
   message.
 
-### Follow-ups due (`lib/outreach-funnel.ts`)
+### What a day owes (`lib/outreach-funnel.ts`, `dueToday`)
 
-- Email follow-ups due on a weekday = emails sent three weekdays earlier
-  (Mon -> Thu, Wed -> next Mon).
-- LinkedIn first messages due = accepted (window through today) minus first
-  messages (window before today), floored at 0.
-- None on weekends or before the split. Due counts are a to-do, not a goal.
+Every count is a running backlog over the pipeline window, so anything skipped
+stays due until it is done, and weekends show the backlog for catch-up:
+
+- Email: emails whose follow-up day (three weekdays after sending: Mon -> Thu,
+  Wed -> Mon) has arrived, minus email follow-ups sent before today.
+- LinkedIn: accepted (through today) minus first messages sent before today.
+- Replies to answer, per channel: replies received (through today) minus
+  replies answered before today. These count toward the goals score.
+- Floored at 0; none before the split. Today's own sends count as done, never
+  as less due. The email backlog cannot see replies, so it can over-ask.
 
 ### Pace nudges (`lib/accountability.ts`)
 

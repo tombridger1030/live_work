@@ -81,7 +81,9 @@ test("mirror ledger overrides rebuild derived scores without mutating the snapsh
     weeks: {},
   });
 
-  expect(updated.days.find((day) => day.day === entry.day)?.dailyValue).toBe(87);
+  // Tuesday: every send done (250 against a 63 bar) = 70; 7 of 11.7 hours (70 h
+  // over the six days left through Sunday after an empty Monday) = 18 of 30.
+  expect(updated.days.find((day) => day.day === entry.day)?.dailyValue).toBe(88);
   expect(updated.weeks[0]?.touches).toBe(250);
   expect(updated.days.find((day) => day.day === entry.day)?.featureDone).toBe(true);
   expect(updated.weeks[0]?.commits).toBe(2);
@@ -119,9 +121,9 @@ test("a mirror channel goal and per-channel counts rebuild channel bars", () => 
     weeks: { "2026-10-12": { reachouts: 150, hours: 55, emails: 100, connectionRequests: 50 } },
   });
 
-  expect(updated.days[0].targets.outreach).toEqual({ kind: "channels", emails: 20, connectionRequests: 10 });
+  expect(updated.days[0].targets?.outreach).toEqual({ kind: "channels", emails: 20, connectionRequests: 10 });
   // Tuesday catches up on Monday's shortfall per channel: (100 - 40) / 4, (50 - 5) / 4.
-  expect(updated.days[1].targets.outreach).toEqual({ kind: "channels", emails: 15, connectionRequests: 12 });
+  expect(updated.days[1].targets?.outreach).toEqual({ kind: "channels", emails: 15, connectionRequests: 12 });
   expect(updated.weeks[0].counts.emailsSent).toBe(40);
 });
 

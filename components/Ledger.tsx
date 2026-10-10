@@ -14,17 +14,14 @@ import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { X } from "lucide-react";
 import { LedgerDayReport } from "@/components/LedgerDayReport";
 import { CodePulse } from "@/components/CodePulse";
-import {
-  MirrorNotice,
-  type MirrorView,
-} from "@/components/MirrorNotice";
+import { MirrorNotice, type MirrorView } from "@/components/MirrorNotice";
 import { OutreachPipeline } from "@/components/OutreachPipeline";
 import { WeeklyGoalsEditor } from "@/components/WeeklyGoalsEditor";
 import type { SaveState } from "@/components/LedgerDayReport";
 import { Num } from "@/components/Num";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { clampDailyCount, type ManualCountField } from "@/lib/ledger-fields";
-import { reassembleLedger } from "@/lib/ledger";
+import { GOALS_POINTS, HOURS_POINTS, reassembleLedger } from "@/lib/ledger";
 import type { LedgerData, LedgerDay, LedgerDayPatch } from "@/lib/ledger";
 import { ledgerDayAriaLabel } from "@/lib/ledger-ui";
 import { outreachBarTotal } from "@/lib/outreach-pace";
@@ -60,10 +57,16 @@ type CountDrafts = Record<string, Partial<Record<ManualCountField, number>>>;
 const saveKey = (day: string, field: ManualCountField) => `${day}:${field}`;
 
 // Color ramp for a day cell from its 0–100 score; out-of-range padding cells stay
-// nearly invisible so the eye only reads real history.
+// nearly invisible so the eye only reads real history. Weekends carry no score:
+// a worked one gets a quiet tint, an idle one stays neutral, neither reads as a miss.
 function dayTone(day: LedgerDay): string {
   if (!day.inRange) {
     return "bg-white/[0.012] text-transparent";
+  }
+  if (day.dailyValue === null) {
+    return day.hours > 0
+      ? "bg-indigo-400/10 text-zinc-100"
+      : "bg-zinc-900/40 text-zinc-500";
   }
   if (day.dailyValue >= 90) {
     return "bg-emerald-400/22 text-emerald-50";
@@ -160,7 +163,10 @@ export function Ledger({ data, mirror }: LedgerProps) {
       for (const [day, fields] of Object.entries(current)) {
         const serverDay = data.days.find((entry) => entry.day === day);
         const kept: Partial<Record<ManualCountField, number>> = {};
-        for (const [field, value] of Object.entries(fields) as [ManualCountField, number][]) {
+        for (const [field, value] of Object.entries(fields) as [
+          ManualCountField,
+          number,
+        ][]) {
           if (serverDay && serverDay[field] !== value) kept[field] = value;
           else changed = true;
         }
@@ -171,11 +177,17 @@ export function Ledger({ data, mirror }: LedgerProps) {
   }, [data.days]);
 
   const view = useMemo(
-    () => (Object.keys(drafts).length === 0 ? data : reassembleLedger(data, drafts as Record<string, LedgerDayPatch>)),
+    () =>
+      Object.keys(drafts).length === 0
+        ? data
+        : reassembleLedger(data, drafts as Record<string, LedgerDayPatch>),
     [data, drafts],
   );
   const viewWeeks = view.weeks;
-  const viewDayMap = useMemo(() => new Map(view.days.map((day) => [day.day, day])), [view.days]);
+  const viewDayMap = useMemo(
+    () => new Map(view.days.map((day) => [day.day, day])),
+    [view.days],
+  );
 
   const weeklyRows = useMemo(
     () =>
@@ -185,7 +197,10 @@ export function Ledger({ data, mirror }: LedgerProps) {
           weekStart: week.weekStart,
           label: week.label,
           weeklyValue: week.weeklyValue,
-          touches: week.goal.outreach.kind === "touches" ? week.touches : week.counts.emailsSent + week.counts.connectionRequests,
+          touches:
+            week.goal.outreach.kind === "touches"
+              ? week.touches
+              : week.counts.emailsSent + week.counts.connectionRequests,
           hours: week.hours,
           touchesTarget: outreachBarTotal(week.goal.outreach),
           hoursTarget: week.goal.hours,
@@ -197,12 +212,18 @@ export function Ledger({ data, mirror }: LedgerProps) {
     () =>
       viewWeeks
         .filter((week) => week.days.some((day) => day.inRange))
-        .map((week) => ({ weekStart: week.weekStart, label: week.label, goal: week.goal })),
+        .map((week) => ({
+          weekStart: week.weekStart,
+          label: week.label,
+          goal: week.goal,
+        })),
     [viewWeeks],
   );
   const selectedDayData = viewDayMap.get(selectedDay) ?? null;
   const summaryWeek =
-    viewWeeks.find((week) => week.days.some((day) => day.day === data.today)) ?? viewWeeks[viewWeeks.length - 1] ?? null;
+    viewWeeks.find((week) => week.days.some((day) => day.day === data.today)) ??
+    viewWeeks[viewWeeks.length - 1] ??
+    null;
 
   function beginDaySelection(day: string) {
     if (selectedDay === day && trayOpen) {
@@ -214,11 +235,14 @@ export function Ledger({ data, mirror }: LedgerProps) {
   }
 
   async function postLedger(body: Record<string, unknown>) {
-    const response = await fetch(mirror ? "/mirror-api/ledger" : "/api/ledger", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const response = await fetch(
+      mirror ? "/mirror-api/ledger" : "/api/ledger",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
     if (!response.ok) {
       if (response.status === 401) {
         setSessionRequired(true);
@@ -242,26 +266,41 @@ export function Ledger({ data, mirror }: LedgerProps) {
     const response = await fetch(
       mirror ? "/mirror-api/ledger/session" : "/api/ledger/session",
       {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret }),
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret }),
       },
     );
     if (!response.ok) {
-      throw new Error(response.status === 429 ? "AUTH_RATE_LIMITED" : "AUTH_REJECTED");
+      throw new Error(
+        response.status === 429 ? "AUTH_RATE_LIMITED" : "AUTH_REJECTED",
+      );
     }
     setSessionRequired(false);
   }
 
-  function persistWeeklyGoal(weekStart: string, emails: number, connectionRequests: number, hours: number) {
-    return postLedger({ weekStart, weeklyEmails: emails, weeklyConnectionRequests: connectionRequests, weeklyHours: hours });
+  function persistWeeklyGoal(
+    weekStart: string,
+    emails: number,
+    connectionRequests: number,
+    hours: number,
+  ) {
+    return postLedger({
+      weekStart,
+      weeklyEmails: emails,
+      weeklyConnectionRequests: connectionRequests,
+      weeklyHours: hours,
+    });
   }
 
   // A perfect day is perfect against its own bars, read from the same
   // reassembly the board shows. Celebrates only after the save lands.
   function celebrateIfPerfect(day: string) {
     const { data: current, drafts: currentDrafts } = latest.current;
-    const scored = reassembleLedger(current, currentDrafts as Record<string, LedgerDayPatch>).days.find((entry) => entry.day === day);
+    const scored = reassembleLedger(
+      current,
+      currentDrafts as Record<string, LedgerDayPatch>,
+    ).days.find((entry) => entry.day === day);
     if (!scored || scored.dailyValue !== 100) {
       return;
     }
@@ -275,7 +314,11 @@ export function Ledger({ data, mirror }: LedgerProps) {
     }, 900);
   }
 
-  function setFieldStates(day: string, fields: ManualCountField[], state: SaveState) {
+  function setFieldStates(
+    day: string,
+    fields: ManualCountField[],
+    state: SaveState,
+  ) {
     setSaveStates((current) => {
       const next = { ...current };
       for (const field of fields) next[saveKey(day, field)] = state;
@@ -300,10 +343,16 @@ export function Ledger({ data, mirror }: LedgerProps) {
   }
 
   function scheduleSave(day: string, field: ManualCountField, value: number) {
-    pendingSaves.current[day] = { ...pendingSaves.current[day], [field]: value };
+    pendingSaves.current[day] = {
+      ...pendingSaves.current[day],
+      [field]: value,
+    };
     setFieldStates(day, [field], "saving");
     window.clearTimeout(saveTimers.current[day]);
-    saveTimers.current[day] = window.setTimeout(() => void flushDay(day), SAVE_DEBOUNCE_MS);
+    saveTimers.current[day] = window.setTimeout(
+      () => void flushDay(day),
+      SAVE_DEBOUNCE_MS,
+    );
   }
 
   function handleCountChange(field: ManualCountField, nextValue: number) {
@@ -312,7 +361,10 @@ export function Ledger({ data, mirror }: LedgerProps) {
     }
     const day = selectedDayData.day;
     const value = clampDailyCount(nextValue);
-    setDrafts((current) => ({ ...current, [day]: { ...current[day], [field]: value } }));
+    setDrafts((current) => ({
+      ...current,
+      [day]: { ...current[day], [field]: value },
+    }));
     scheduleSave(day, field, value);
   }
 
@@ -324,7 +376,9 @@ export function Ledger({ data, mirror }: LedgerProps) {
   }
 
   const saveStateOf = (field: ManualCountField): SaveState =>
-    selectedDayData ? (saveStates[saveKey(selectedDayData.day, field)] ?? "idle") : "idle";
+    selectedDayData
+      ? (saveStates[saveKey(selectedDayData.day, field)] ?? "idle")
+      : "idle";
 
   const outreachGoal = summaryWeek?.goal.outreach ?? null;
   const summaryStats = summaryWeek
@@ -358,7 +412,10 @@ export function Ledger({ data, mirror }: LedgerProps) {
           target: summaryWeek.goal.hours,
           accent: "from-teal-400/80 to-emerald-300/90",
         },
-      ].map((stat) => ({ ...stat, pct: stat.target > 0 ? Math.min(1, stat.value / stat.target) : 1 }))
+      ].map((stat) => ({
+        ...stat,
+        pct: stat.target > 0 ? Math.min(1, stat.value / stat.target) : 1,
+      }))
     : [];
 
   const dayReportPanel = selectedDayData ? (
@@ -369,11 +426,30 @@ export function Ledger({ data, mirror }: LedgerProps) {
             {selectedDayData.weekdayLabel} · {selectedDayData.label}
           </p>
           <div className="mt-1 flex items-end gap-2">
-            <span className="text-xs text-zinc-500">Activity score</span>
+            <span className="text-xs text-zinc-500">
+              {selectedDayData.dailyValue === null
+                ? "Weekend · extra hours"
+                : "Activity score"}
+            </span>
             <Num className="text-3xl font-semibold leading-none text-zinc-50">
-              {String(selectedDayData.dailyValue)}
+              {selectedDayData.dailyValue === null
+                ? selectedDayData.hours.toFixed(1)
+                : String(selectedDayData.dailyValue)}
             </Num>
           </div>
+          {selectedDayData.scoreParts ? (
+            <p className="mt-1.5 text-[11px] tabular-nums text-zinc-500">
+              Goals{" "}
+              <span className="text-zinc-300">
+                {selectedDayData.scoreParts.goals}
+              </span>{" "}
+              of {GOALS_POINTS} · Hours{" "}
+              <span className="text-zinc-300">
+                {selectedDayData.scoreParts.hours}
+              </span>{" "}
+              of {HOURS_POINTS}
+            </p>
+          ) : null}
         </div>
         <button
           type="button"
@@ -437,7 +513,12 @@ export function Ledger({ data, mirror }: LedgerProps) {
                 </Num>
               </div>
             </div>
-            <div className={cn("grid gap-3", summaryStats.length === 3 ? "grid-cols-3" : "grid-cols-2")}>
+            <div
+              className={cn(
+                "grid gap-3",
+                summaryStats.length === 3 ? "grid-cols-3" : "grid-cols-2",
+              )}
+            >
               {summaryStats.map((stat) => (
                 <div key={stat.label}>
                   <div className="flex items-baseline justify-between gap-1">
@@ -470,7 +551,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
               ))}
             </div>
             <p className="mt-4 text-xs text-zinc-400">
-              Outreach paced Monday to Friday ·{" "}
+              Goals paced Monday to Friday; weekends are extra ·{" "}
               <span className="text-zinc-200">{summaryWeek.commits}</span>{" "}
               commits ·{" "}
               <span className="text-zinc-200">{summaryWeek.merges}</span> merges
@@ -490,7 +571,9 @@ export function Ledger({ data, mirror }: LedgerProps) {
 
         <section className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.25)] sm:p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-zinc-100">Activity trend</h2>
+            <h2 className="text-sm font-semibold text-zinc-100">
+              Activity trend
+            </h2>
             <LayoutGroup id="ledger-trend-toggle">
               <div className="flex items-center gap-1 rounded-full bg-black/20 p-0.5">
                 {(["daily", "weekly"] as const).map((mode) => (
@@ -535,7 +618,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
           <h2 className="mb-3 text-sm font-semibold text-zinc-100">
             Weekday activity averages
           </h2>
-          <div className="grid grid-cols-7 gap-2">
+          <div className="grid grid-cols-5 gap-2">
             {view.weekdayAverages.map((average, index) => (
               <div
                 key={average.weekday}
@@ -567,10 +650,10 @@ export function Ledger({ data, mirror }: LedgerProps) {
 
         <section className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.25)] sm:p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-zinc-100">Activity history</h2>
-            <p className="text-[11px] text-zinc-500">
-              Tap a day to log it.
-            </p>
+            <h2 className="text-sm font-semibold text-zinc-100">
+              Activity history
+            </h2>
+            <p className="text-[11px] text-zinc-500">Tap a day to log it.</p>
           </div>
           <div className="grid grid-cols-[28px_repeat(7,minmax(0,1fr))] gap-1">
             <div />
@@ -638,7 +721,11 @@ export function Ledger({ data, mirror }: LedgerProps) {
                         </div>
                         {day.inRange ? (
                           <Num className="self-end text-base font-semibold leading-none">
-                            {String(day.dailyValue)}
+                            {day.dailyValue === null
+                              ? day.hours > 0
+                                ? `${day.hours.toFixed(1)}h`
+                                : "–"
+                              : String(day.dailyValue)}
                           </Num>
                         ) : null}
                       </div>
@@ -700,7 +787,6 @@ export function Ledger({ data, mirror }: LedgerProps) {
             })}
           </div>
         </section>
-
       </div>
 
       <Sheet

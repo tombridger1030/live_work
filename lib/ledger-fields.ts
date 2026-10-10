@@ -10,10 +10,13 @@ export const UNSPLIT_COUNT_FIELDS = [
   "followUpsSent",
 ] as const;
 
+// `...Replies` are replies received from prospects; `...RepliesAnswered` are
+// the owner's answers to them.
 export const EMAIL_COUNT_FIELDS = [
   "emailsSent",
   "emailFollowUps",
   "emailReplies",
+  "emailRepliesAnswered",
   "emailMeetings",
 ] as const;
 
@@ -24,6 +27,7 @@ export const LINKEDIN_COUNT_FIELDS = [
   "connections",
   "linkedinMessages",
   "linkedinReplies",
+  "linkedinRepliesAnswered",
   "linkedinMeetings",
 ] as const;
 

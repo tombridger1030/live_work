@@ -376,7 +376,7 @@ export async function evaluateAndNudge(now: Date = new Date()): Promise<void> {
   // Saturday and Sunday carry no outreach bar, so no checkpoint fires then.
   const ledger = await getDisplayedLedger(now);
   const todayRow = ledger?.days.find((day) => day.day === today) ?? null;
-  const outreachBar = todayRow?.targets.outreach ?? null;
+  const outreachBar = todayRow?.targets?.outreach ?? null;
   const dailyOutreachTarget = outreachBar
     ? outreachBarTotal(outreachBar)
     : null;

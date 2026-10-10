@@ -37,7 +37,16 @@ export type OutreachFunnel = {
   headline: string;
 };
 
-export type FollowUpsDue = { emailFollowUps: number; linkedinMessages: number };
+/**
+ * What a day owes, keyed by the count that clears each item: email follow-ups,
+ * LinkedIn first messages, and answers to prospects who replied on each channel.
+ */
+export type DueToday = {
+  emailFollowUps: number;
+  linkedinMessages: number;
+  emailRepliesAnswered: number;
+  linkedinRepliesAnswered: number;
+};
 
 type StepSpec = {
   key: string;
@@ -226,50 +235,53 @@ export function buildOutreachFunnel(
   };
 }
 
+// The day an email's follow-up falls due: three weekdays after it was sent.
+function followUpDay(sent: string): string {
+  let day = sent;
+  let weekdays = 0;
+  while (weekdays < EMAIL_FOLLOW_UP_WEEKDAYS) {
+    day = shiftDay(day, 1);
+    if (isOutreachDay(day)) weekdays += 1;
+  }
+  return day;
+}
+
 /**
- * What `days[index]` owes in follow-ups: a to-do, never a goal.
+ * What `days[index]` owes. Every count is a running backlog over the pipeline
+ * window, so anything skipped stays due until it is done, and a weekend shows
+ * what is left to catch up.
  *
- * - Email: everything sent three weekdays earlier (Mon -> Thu, Wed -> Mon).
- * - LinkedIn: people who accepted (window through this day) minus first
- *   messages sent before this day, floored at 0. This day's own messages are
- *   "done", so they never shrink "due".
+ * - Email follow-ups: emails whose follow-up day (three weekdays after
+ *   sending: Mon -> Thu, Wed -> Mon) has arrived, minus follow-ups sent before
+ *   this day. Cannot see replies, so it can ask for an unneeded follow-up.
+ * - LinkedIn first messages: people who accepted (through this day) minus first
+ *   messages sent before this day.
+ * - Replies to answer, per channel: replies received (through this day) minus
+ *   replies answered before this day.
  *
- * Returns null on weekends and on days before the split.
+ * Floored at 0. This day's own sends are "done", so they never shrink "due".
+ * Returns null before the split.
  */
-export function followUpsDue(
-  days: FunnelDay[],
-  index: number,
-  splitStart: string | null,
-): FollowUpsDue | null {
+export function dueToday(days: FunnelDay[], index: number, splitStart: string | null): DueToday | null {
   const today = days[index];
-  if (
-    !today ||
-    splitStart === null ||
-    today.day < splitStart ||
-    !isOutreachDay(today.day)
-  ) {
+  if (!today || splitStart === null || today.day < splitStart) {
     return null;
   }
-  let emailFollowUps = 0;
-  let weekdaysBack = 0;
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    if (!isOutreachDay(days[cursor].day)) continue;
-    weekdaysBack += 1;
-    if (weekdaysBack === EMAIL_FOLLOW_UP_WEEKDAYS) {
-      emailFollowUps = days[cursor].inRange ? days[cursor].emailsSent : 0;
-      break;
+  const fromDay = windowStart(splitStart, today.day);
+  const yesterday = shiftDay(today.day, -1);
+  // Received through today, minus what was handled before today.
+  const backlog = (received: keyof ManualCounts, handled: keyof ManualCounts) =>
+    Math.max(0, sumOver(days, received, fromDay, today.day) - sumOver(days, handled, fromDay, yesterday));
+  let emailsDue = 0;
+  for (const day of days) {
+    if (day.inRange && day.day >= fromDay && day.day <= today.day && followUpDay(day.day) <= today.day) {
+      emailsDue += day.emailsSent;
     }
   }
-  const fromDay = windowStart(splitStart, today.day);
-  const accepted = sumOver(days, "connections", fromDay, today.day);
-  const messagedBefore = sumOver(
-    days,
-    "linkedinMessages",
-    fromDay,
-    shiftDay(today.day, -1),
-  );
   return {
-    emailFollowUps,
-    linkedinMessages: Math.max(0, accepted - messagedBefore),
+    emailFollowUps: Math.max(0, emailsDue - sumOver(days, "emailFollowUps", fromDay, yesterday)),
+    linkedinMessages: backlog("connections", "linkedinMessages"),
+    emailRepliesAnswered: backlog("emailReplies", "emailRepliesAnswered"),
+    linkedinRepliesAnswered: backlog("linkedinReplies", "linkedinRepliesAnswered"),
   };
 }
