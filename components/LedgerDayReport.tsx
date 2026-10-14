@@ -5,6 +5,8 @@ import { Minus, Plus, RotateCcw } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { Num } from "@/components/Num";
 import { LedgerOwnerAccess } from "@/components/LedgerOwnerAccess";
+import { HoursPaceReadout } from "@/components/HoursPaceReadout";
+import type { HoursPaceContext } from "@/lib/hours-pace";
 import { appSpring, motionTransition } from "@/components/MotionPrimitives";
 import {
   MAX_DAILY_COUNT,
@@ -27,6 +29,7 @@ export type LedgerDayReportProps = {
   onAuthenticate: (secret: string) => Promise<void>;
   /** The selected day with unsaved drafts already applied and re-scored. */
   day: LedgerDay;
+  hoursPaceContext?: HoursPaceContext;
   /**
    * Bonus points the day's week has from emails so far, or null when that
    * week's goal counts emails (weeks saved before Oct 13, 2026).
@@ -295,6 +298,7 @@ export function LedgerDayReport({
   sessionRequired,
   onAuthenticate,
   day,
+  hoursPaceContext,
   emailBonus,
   saveStateOf,
   onCountChange,
@@ -303,12 +307,13 @@ export function LedgerDayReport({
   const rowProps = { saveStateOf, onCountChange, onCountRetry };
   const bar = day.targets?.outreach ?? null;
   const hoursTarget = day.targets?.hours ?? null;
+  const expectedHours = day.hoursPace?.expectedHours ?? null;
   const channelBars = bar?.kind === "channels" ? bar : null;
   const touchesBar = bar?.kind === "touches" ? bar : null;
   const touchesToday = outreachTally(day).touches;
   const unsplitFields = UNSPLIT_COUNT_FIELDS.filter((field) => day[field] > 0);
   const hoursState =
-    hoursTarget === null ? null : progressState(day.creditedHours, hoursTarget);
+    hoursTarget === null ? null : day.hoursPace?.state ?? progressState(day.creditedHours, hoursTarget);
 
   return (
     <div className="space-y-3">
@@ -504,7 +509,9 @@ export function LedgerDayReport({
             <span
               className={cn(
                 "text-xs font-medium capitalize",
-                statusTone(hoursState),
+                day.hoursPace ? hoursState === "behind" ? "text-rose-300" :
+                  ["done", "ahead", "on pace"].includes(hoursState) ? "text-emerald-300" : "text-zinc-500" :
+                  statusTone(hoursState as ProgressState),
               )}
             >
               {hoursState}
@@ -527,12 +534,25 @@ export function LedgerDayReport({
           {hoursSource(day)}
         </p>
         {hoursTarget !== null ? (
-          <div className="mt-2">
+          <div className="relative mt-3">
             <Bar
               value={day.creditedHours}
               target={hoursTarget}
               gradient={HOURS_GRADIENT}
             />
+            {expectedHours !== null && hoursTarget > 0 ? (
+              <span
+                className="absolute -top-1 h-3.5 w-px bg-zinc-200/70"
+                style={{ left: `${Math.min(100, expectedHours / hoursTarget * 100)}%` }}
+                title={`${expectedHours.toFixed(1)} h expected now`}
+                aria-hidden="true"
+              />
+            ) : null}
+          </div>
+        ) : null}
+        {day.hoursPace && hoursPaceContext ? (
+          <div className="mt-3">
+            <HoursPaceReadout pace={day.hoursPace} context={hoursPaceContext} />
           </div>
         ) : null}
         <div className="mt-3 border-t border-white/[0.05] pt-1">

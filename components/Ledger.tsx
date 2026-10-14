@@ -13,6 +13,7 @@ import {
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { Pencil, X } from "lucide-react";
 import { LedgerDayReport } from "@/components/LedgerDayReport";
+import { HoursPaceReadout } from "@/components/HoursPaceReadout";
 import { CodePulse } from "@/components/CodePulse";
 import { MirrorNotice, type MirrorView } from "@/components/MirrorNotice";
 import { OutreachPipeline } from "@/components/OutreachPipeline";
@@ -237,6 +238,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
     [viewWeeks],
   );
   const selectedDayData = viewDayMap.get(selectedDay) ?? null;
+  const todayDay = viewDayMap.get(data.today);
   const historyWeeks = historyExpanded
     ? viewWeeks
     : viewWeeks.slice(-HISTORY_PREVIEW_WEEKS);
@@ -458,7 +460,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
             <span className="text-xs text-zinc-500">
               {selectedDayData.dailyValue === null
                 ? "Weekend · extra hours"
-                : "Activity score"}
+                : selectedDayData.hoursPace?.expectedHours !== null && selectedDayData.hoursPace
+                  ? "Activity score · hours paced" : "Activity score"}
             </span>
             <Num className="text-3xl font-semibold leading-none text-zinc-50">
               {selectedDayData.dailyValue === null
@@ -514,6 +517,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
           sessionRequired={sessionRequired}
           onAuthenticate={authenticateOwner}
           day={selectedDayData}
+          hoursPaceContext={view.hoursPaceContext}
           emailBonus={
             selectedWeek && !countsEmails(selectedWeek.goal.outreach)
               ? selectedWeek.emailBonus
@@ -632,6 +636,24 @@ export function Ledger({ data, mirror }: LedgerProps) {
               commits ·{" "}
               <span className="text-zinc-200">{summaryWeek.merges}</span> merges
             </p>
+            {todayDay?.hoursPace && view.hoursPaceContext ? (
+              <button
+                type="button"
+                onClick={() => beginDaySelection(data.today)}
+                aria-label="Open today's hours pace report"
+                aria-describedby="today-hours-pace"
+                className="mt-4 block w-full rounded-2xl border border-white/[0.07] bg-black/15 px-3 py-3 text-left transition-colors hover:bg-white/[0.03]"
+              >
+                <p className="mb-1.5 text-xs text-zinc-400">
+                  Today · <span className="font-medium tabular-nums text-zinc-100">{todayDay.creditedHours.toFixed(1)} h</span>
+                  {todayDay.targets ? ` / ${todayDay.targets.hours.toFixed(1)} h goal` : ""}
+                  <span className="float-right text-zinc-500">View day →</span>
+                </p>
+                <div id="today-hours-pace">
+                  <HoursPaceReadout pace={todayDay.hoursPace} context={view.hoursPaceContext} />
+                </div>
+              </button>
+            ) : null}
           </section>
         ) : null}
         {summaryWeek && goalsOpen ? (

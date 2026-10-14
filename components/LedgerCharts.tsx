@@ -12,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import type { DaySends, ScoreParts } from "@/lib/ledger";
+import type { HoursPace } from "@/lib/hours-pace";
 import { ledgerChartDayTick } from "@/lib/ledger-ui";
 
 type DailyRow = {
@@ -22,6 +23,7 @@ type DailyRow = {
   sends: DaySends; // what the day required, from its own week's goal
   creditedHours: number;
   hoursTarget: number;
+  hoursPace?: HoursPace;
   weekAverage: number | null;
 };
 
@@ -506,7 +508,9 @@ export function LedgerCharts({
                         mark={<LegendDot color={SERIES.hours.color} />}
                         label="Hours"
                         value={`${point.hoursPoints} of 30`}
-                        detail={`${point.creditedHours.toFixed(1)} of ${point.hoursTarget.toFixed(1)} h`}
+                        detail={point.hoursPace?.expectedHours != null
+                          ? `${point.creditedHours.toFixed(1)} of ${point.hoursPace.expectedHours.toFixed(1)} h expected now · ${point.hoursTarget.toFixed(1)} h daily goal`
+                          : `${point.creditedHours.toFixed(1)} of ${point.hoursTarget.toFixed(1)} h`}
                       />
                       <TooltipRow
                         mark={<LegendDash />}

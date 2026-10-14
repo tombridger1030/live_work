@@ -1,5 +1,7 @@
 import { getLedgerData } from "@/lib/ledger-server";
 import { Ledger } from "@/components/Ledger";
+import { readHoursPace } from "@/lib/hours-pace-server";
+import { reassembleLedger } from "@/lib/ledger";
 import {
   captureFreshnessForMirror,
   captureHealthForMirror,
@@ -15,12 +17,14 @@ export const revalidate = 15;
  * Ledger on Vercel. Browser reads and edits stay on the current origin.
  */
 export default async function LedgerPage() {
+  const now = new Date();
   if (isMirrorHost()) {
-    const snapshot = await readLatestMirror();
+    const snapshot = await readLatestMirror(now);
     if (snapshot?.ledger) {
+      const pace = await readHoursPace(snapshot.ledger, now);
       return (
         <Ledger
-          data={snapshot.ledger}
+          data={reassembleLedger(snapshot.ledger, {}, undefined, pace)}
           mirror={{
             publishedAt: snapshot.publishedAt,
             captureHealth: captureHealthForMirror(snapshot),
@@ -32,6 +36,7 @@ export default async function LedgerPage() {
     return <main className="mx-auto max-w-5xl px-5 py-10"><h1 className="text-xl font-medium">Ledger is temporarily unavailable</h1><p className="mt-3 text-sm text-muted-foreground">The last published data could not be loaded. Reload to try again.</p></main>;
   }
 
-  const data = await getLedgerData(new Date());
-  return <Ledger data={data} />;
+  const data = await getLedgerData(now);
+  const pace = await readHoursPace(data, now);
+  return <Ledger data={reassembleLedger(data, {}, undefined, pace)} />;
 }

@@ -21,6 +21,7 @@ import {
   type OutreachTally,
 } from "@/lib/outreach-pace";
 import { captureIntervalMinutes, weekStartForDay } from "@/lib/time";
+import { hoursPaceForGoal, type HoursPace, type HoursPaceContext } from "@/lib/hours-pace";
 import type { LedgerEntry, WeeklyGoal } from "@/lib/types";
 import { outreachGoalOf, storedWeeklyGoal } from "@/lib/weekly-goal";
 
@@ -96,6 +97,7 @@ export type LedgerDay = ManualCounts & {
   sends: DaySends | null; // what the goals share is earned from; null on weekends
   dailyValue: number | null; // null on weekends: extra work is never scored
   scoreParts: ScoreParts | null; // goals (of 70) + hours (of 30) = dailyValue; null on weekends
+  hoursPace?: HoursPace; // live only; historical dates always use their full goal
   active: boolean;
 };
 
@@ -119,6 +121,7 @@ export type LedgerWeek = {
 };
 
 export type LedgerData = {
+  hoursPaceContext?: HoursPaceContext; // transient server input, retained by optimistic rebuilds
   startDay: string;
   endDay: string;
   today: string;
@@ -133,7 +136,8 @@ export type LedgerData = {
     sends: DaySends; // what the goals part was earned against, from the day's own bars
     creditedHours: number;
     hoursTarget: number; // the day's hours bar, from its own week's goal
-    weekAverage: number | null; // mean of this and the previous four scored weekdays
+    hoursPace?: HoursPace;
+    weekAverage: number | null; // last five final weekday scores; live today uses its predecessors
   }[];
   weeklyChart: { weekStart: string; label: string; weeklyValue: number }[];
   funnel: OutreachFunnel;
@@ -270,14 +274,14 @@ export function dailyScore(
 
 // `dailyScore` from sends already worked out, so the score and the sends a
 // day report shows come from one computation.
-function scoreSends(sends: DaySends, hours: number, hoursBar: number): ScoreParts {
+function scoreSends(sends: DaySends, hours: number, hoursBar: number, pace?: HoursPace): ScoreParts {
   const kinds = Object.values(sends);
   const required = kinds.reduce((sum, send) => sum + send.required, 0);
   const done = kinds.reduce((sum, send) => sum + send.done, 0);
   const goalsPct = required > 0 ? done / required : 1;
   return {
     goals: Math.round(GOALS_POINTS * goalsPct),
-    hours: Math.round(HOURS_POINTS * hoursProgress(hours, hoursBar)),
+    hours: Math.round(HOURS_POINTS * (pace?.progress ?? hoursProgress(hours, hoursBar))),
   };
 }
 
@@ -417,6 +421,8 @@ const ZERO_TALLY: OutreachTally = {
  * carry no counts. Postcondition: every derived value comes from this one
  * function, so the board, the day report, the overlay, and the Telegram ladder
  * cannot disagree.
+ * Optional live pace must identify `today`; it changes only today's hours
+ * points, never stored facts, past scores, catch-up goals, or weekly progress.
  */
 export function assembleLedger(
   days: string[],
@@ -425,7 +431,11 @@ export function assembleLedger(
   today: string,
   rangeStart: string,
   weeklyGoals: WeeklyGoal[] = [],
+  hoursPaceContext?: HoursPaceContext,
 ): LedgerData {
+  if (hoursPaceContext && hoursPaceContext.day !== today) {
+    throw new Error("Hours pace context must belong to the ledger's current day");
+  }
   const startDay = days[0];
   const endDay = days[days.length - 1];
 
@@ -489,12 +499,14 @@ export function assembleLedger(
     // but nothing logged: no sends, and a zero score.
     const sends =
       targets !== null && inRange ? daySends(counts, targets.outreach, due) : null;
+    const hoursPace = hoursPaceContext && state === "today" && inRange && targets
+      ? hoursPaceForGoal(hoursPaceContext, credited, targets.hours) : undefined;
     const scoreParts: ScoreParts | null =
       targets === null
         ? null
         : sends === null
           ? { goals: 0, hours: 0 }
-          : scoreSends(sends, credited, targets.hours);
+          : scoreSends(sends, credited, targets.hours, hoursPace);
     return {
       ...counts,
       day,
@@ -508,6 +520,7 @@ export function assembleLedger(
       state,
       hours,
       creditedHours: credited,
+      ...(hoursPace ? { hoursPace } : {}),
       featureDone: entry?.featureDone ?? false,
       commits: entry?.commits ?? 0,
       merges: entry?.merges ?? 0,
@@ -559,8 +572,10 @@ export function assembleLedger(
   // Daily chart: every scored weekday + the average of the last five (one week).
   const dailyChart = scoredDays.map((d, i) => {
     let weekAverage: number | null = null;
-    if (i >= 4) {
-      const window = scoredDays.slice(i - 4, i + 1);
+    const completed = hoursPaceContext && d.state === "today"
+      ? scoredDays.slice(0, i) : scoredDays.slice(0, i + 1);
+    if (completed.length >= 5) {
+      const window = completed.slice(-5);
       weekAverage = Math.round(
         window.reduce((sum, w) => sum + w.dailyValue, 0) / 5,
       );
@@ -573,6 +588,7 @@ export function assembleLedger(
       sends: d.sends,
       creditedHours: d.creditedHours,
       hoursTarget: d.hoursTarget,
+      ...(d.hoursPace ? { hoursPace: d.hoursPace } : {}),
       weekAverage,
     };
   });
@@ -601,6 +617,7 @@ export function assembleLedger(
   };
 
   return {
+    ...(hoursPaceContext ? { hoursPaceContext } : {}),
     startDay,
     endDay,
     today,
@@ -674,11 +691,14 @@ export function ledgerWeeklyGoals(data: LedgerData): WeeklyGoal[] {
  * both use this one path, so a draft and a saved value can never score
  * differently. Patches for days outside the data window are ignored; capture
  * fields (hours, commits, merges) cannot be patched. Input is not mutated.
+ * Retains the server's live pace context, so manual drafts use the same clock
+ * and reference curve as the saved report; changed goals scale expectations.
  */
 export function reassembleLedger(
   data: LedgerData,
   patches: Record<string, LedgerDayPatch> = {},
   goals: WeeklyGoal[] = ledgerWeeklyGoals(data),
+  hoursPaceContext: HoursPaceContext | undefined = data.hoursPaceContext,
 ): LedgerData {
   const entries = new Map<string, LedgerEntry>();
   const hoursByDay = new Map<string, number>();
@@ -697,5 +717,6 @@ export function reassembleLedger(
     data.today,
     rangeStart,
     goals,
+    hoursPaceContext,
   );
 }
