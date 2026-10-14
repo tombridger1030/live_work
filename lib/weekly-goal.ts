@@ -28,35 +28,22 @@ function isGoalHours(value: unknown): value is number {
 
 /**
  * Validates a goal the owner is saving, once for route, store, and UI use.
- * Every new goal is per channel: whole-number emails and connection requests
- * per week (0 to 10000 each, at least one between them) and finite hours,
- * effective from a real Monday.
+ * Every new goal is connection requests per week (a whole number from 1 to
+ * 10000) and finite hours, effective from a real Monday. Emails are bonus,
+ * never a goal (owner decision, 2026-10-13).
  */
 export function validateWeeklyGoal(
   weekStart: unknown,
-  emails: unknown,
   connectionRequests: unknown,
   hours: unknown,
 ): WeeklyGoalValidation {
   if (typeof weekStart !== "string" || !isMondayWeekStart(weekStart)) {
     return { ok: false, error: "weekStart must be a real Monday YYYY-MM-DD" };
   }
-  if (!isGoalCount(emails)) {
+  if (!isGoalCount(connectionRequests) || connectionRequests < 1) {
     return {
       ok: false,
-      error: `weeklyEmails must be an integer from 0 to ${WEEKLY_GOAL_MAX_COUNT}`,
-    };
-  }
-  if (!isGoalCount(connectionRequests)) {
-    return {
-      ok: false,
-      error: `weeklyConnectionRequests must be an integer from 0 to ${WEEKLY_GOAL_MAX_COUNT}`,
-    };
-  }
-  if (emails + connectionRequests < 1) {
-    return {
-      ok: false,
-      error: "weeklyEmails and weeklyConnectionRequests cannot both be 0",
+      error: `weeklyConnectionRequests must be an integer from 1 to ${WEEKLY_GOAL_MAX_COUNT}`,
     };
   }
   if (!isGoalHours(hours)) {
@@ -69,9 +56,22 @@ export function validateWeeklyGoal(
 }
 
 /**
- * The stored shape of a channel goal. `reachouts` is kept as the sum so the
- * Postgres NOT NULL column and older readers of the overlay stay valid.
- * Precondition: the inputs passed `validateWeeklyGoal`.
+ * The stored shape of a goal saved now: a channel goal asking for 0 emails,
+ * which makes that week's emails bonus (see `countsEmails`). The one place
+ * new goals are built. Precondition: the inputs passed `validateWeeklyGoal`.
+ */
+export function connectionRequestGoal(
+  weekStart: string,
+  connectionRequests: number,
+  hours: number,
+): WeeklyGoal {
+  return channelWeeklyGoal(weekStart, 0, connectionRequests, hours);
+}
+
+/**
+ * The stored shape of a channel goal, including weeks saved with an email
+ * number before Oct 13, 2026. `reachouts` is kept as the sum so the Postgres
+ * NOT NULL column and older readers of the overlay stay valid.
  */
 export function channelWeeklyGoal(
   weekStart: string,

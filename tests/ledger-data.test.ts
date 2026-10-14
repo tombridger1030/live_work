@@ -48,9 +48,9 @@ test("legacy feature flags survive without affecting activity, charts, or streak
   const legacy = build(true);
   const empty = build(false);
   expect(legacy.days.every((day) => day.featureDone)).toBe(true);
-  expect(legacy.days.every((day) => (day.dailyValue ?? 0) === 0 && !day.active)).toBe(
-    true,
-  );
+  expect(
+    legacy.days.every((day) => (day.dailyValue ?? 0) === 0 && !day.active),
+  ).toBe(true);
   expect(legacy.totals).toEqual(empty.totals);
   expect(legacy.totals.activeDayStreak).toBe(0);
   expect(legacy.dailyChart).toEqual(empty.dailyChart);
@@ -72,6 +72,8 @@ test("a week splits 70 points for goals and 30 for hours, with independent caps"
   ).toEqual({
     outreachPct: 1,
     hoursPct: 1,
+    baseValue: 100,
+    emailBonus: 0,
     weeklyValue: 100,
   });
 });
@@ -101,22 +103,47 @@ test("a weekday gives 70 points for finishing its goals and 30 for its hours", (
   expect(dailyValue(sent(50000), 0, WEEKDAY, null)).toBe(70);
   expect(dailyValue(sent(0), 10000, WEEKDAY, null)).toBe(30);
   expect(dailyValue(sent(25), 5, WEEKDAY, null)).toBe(50);
-  expect(dailyScore(sent(25), 5, WEEKDAY, null)).toEqual({ goals: 35, hours: 15 });
+  expect(dailyScore(sent(25), 5, WEEKDAY, null)).toEqual({
+    goals: 35,
+    hours: 15,
+  });
 });
 
-test("answering replies counts toward the goals share; follow-ups never do", () => {
-  const due = { emailFollowUps: 12, linkedinMessages: 4, emailRepliesAnswered: 6, linkedinRepliesAnswered: 4 };
-  // 50 new touches + 6 email + 4 LinkedIn answers owed = 60 required sends.
-  expect(dailyScore(readManualCounts({ reachouts: 50 }), 10, WEEKDAY, due)).toEqual({ goals: 58, hours: 30 }); // 50/60
+// Amended 2026-10-13 by the owner: first LinkedIn messages owed (2nd touches)
+// now count toward the goals share; email follow-ups still never do.
+test("answering replies and 2nd touches count toward the goals share; email follow-ups never do", () => {
+  const due = {
+    emailFollowUps: 12,
+    linkedinMessages: 4,
+    emailRepliesAnswered: 6,
+    linkedinRepliesAnswered: 4,
+  };
+  const everyOwedSend = {
+    reachouts: 50,
+    linkedinMessages: 4,
+    emailRepliesAnswered: 6,
+    linkedinRepliesAnswered: 4,
+  };
+  // 50 new touches + 4 first messages + 6 email + 4 LinkedIn answers owed = 64 required sends.
   expect(
-    dailyScore(readManualCounts({ reachouts: 50, emailRepliesAnswered: 6, linkedinRepliesAnswered: 4 }), 10, WEEKDAY, due),
-  ).toEqual({ goals: 70, hours: 30 });
-  // Extra email answers cannot stand in for unanswered LinkedIn replies.
-  expect(dailyScore(readManualCounts({ reachouts: 50, emailRepliesAnswered: 20 }), 0, WEEKDAY, due).goals).toBe(65); // 56/60
-  // Follow-ups due are a to-do: skipping them costs nothing, sending them adds nothing.
-  expect(dailyScore(readManualCounts({ reachouts: 50, emailRepliesAnswered: 6, linkedinRepliesAnswered: 4 }), 10, WEEKDAY, due)).toEqual(
+    dailyScore(readManualCounts({ reachouts: 50 }), 10, WEEKDAY, due),
+  ).toEqual({ goals: 55, hours: 30 }); // 50/64
+  expect(dailyScore(readManualCounts(everyOwedSend), 10, WEEKDAY, due)).toEqual(
+    { goals: 70, hours: 30 },
+  );
+  // Extra email answers cannot stand in for unanswered LinkedIn replies or messages.
+  expect(
     dailyScore(
-      readManualCounts({ reachouts: 50, emailRepliesAnswered: 6, linkedinRepliesAnswered: 4, emailFollowUps: 12, linkedinMessages: 4 }),
+      readManualCounts({ reachouts: 50, emailRepliesAnswered: 20 }),
+      0,
+      WEEKDAY,
+      due,
+    ).goals,
+  ).toBe(61); // 56/64
+  // Email follow-ups due are a to-do: skipping them costs nothing, sending them adds nothing.
+  expect(dailyScore(readManualCounts(everyOwedSend), 10, WEEKDAY, due)).toEqual(
+    dailyScore(
+      readManualCounts({ ...everyOwedSend, emailFollowUps: 12 }),
       10,
       WEEKDAY,
       due,
@@ -126,35 +153,77 @@ test("answering replies counts toward the goals share; follow-ups never do", () 
 
 test("a weekend has no targets and no score, and its work still counts toward the week", () => {
   const days = dayRange("2026-10-05", "2026-10-11");
-  const goals: WeeklyGoal[] = [{ weekStart: "2026-10-05", reachouts: 150, hours: 55 }];
+  const goals: WeeklyGoal[] = [
+    { weekStart: "2026-10-05", reachouts: 150, hours: 55 },
+  ];
   const hoursByDay = new Map([
     ["2026-10-10", 3],
     ["2026-10-11", 0],
   ]);
-  const entries = new Map<string, LedgerEntry>([["2026-10-10", entry("2026-10-10", { emailFollowUps: 6 })]]);
-  const data = assembleLedger(days, entries, hoursByDay, "2026-10-11", "2026-10-05", goals);
+  const entries = new Map<string, LedgerEntry>([
+    ["2026-10-10", entry("2026-10-10", { emailFollowUps: 6 })],
+  ]);
+  const data = assembleLedger(
+    days,
+    entries,
+    hoursByDay,
+    "2026-10-11",
+    "2026-10-05",
+    goals,
+  );
   const [saturday, sunday] = data.days.slice(5);
-  expect([saturday.targets, saturday.dailyValue, sunday.targets, sunday.dailyValue]).toEqual([null, null, null, null]);
+  expect([
+    saturday.targets,
+    saturday.dailyValue,
+    sunday.targets,
+    sunday.dailyValue,
+  ]).toEqual([null, null, null, null]);
   expect(saturday.active).toBe(true); // worked: follow-ups and hours
-  expect(data.weeks[0].hours).toBe(3);
+  expect(data.weeks[0].creditedHours).toBe(3);
   expect(data.weeks[0].counts.emailFollowUps).toBe(6);
-  expect(data.weekdayAverages.map((average) => average.weekday)).toEqual(["Mon", "Tue", "Wed", "Thu", "Fri"]);
+  expect(data.weekdayAverages.map((average) => average.weekday)).toEqual([
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+  ]);
   expect(data.dailyChart.map((point) => point.day)).toEqual(days.slice(0, 5));
 });
 
 test("hours catch up over every day left through Sunday", () => {
   const days = dayRange("2026-10-05", "2026-10-11");
-  const goals: WeeklyGoal[] = [{ weekStart: "2026-10-05", reachouts: 150, hours: 55 }];
-  const data = assembleLedger(days, new Map(), new Map([["2026-10-05", 9.5]]), "2026-10-07", "2026-10-05", goals);
-  expect(data.days.slice(0, 3).map((day) => day.targets?.hours)).toEqual([7.9, 7.6, 9.1]); // 55/7, 45.5/6, 45.5/5
+  const goals: WeeklyGoal[] = [
+    { weekStart: "2026-10-05", reachouts: 150, hours: 55 },
+  ];
+  const data = assembleLedger(
+    days,
+    new Map(),
+    new Map([["2026-10-05", 9.5]]),
+    "2026-10-07",
+    "2026-10-05",
+    goals,
+  );
+  expect(data.days.slice(0, 3).map((day) => day.targets?.hours)).toEqual([
+    7.9, 7.6, 9.1,
+  ]); // 55/7, 45.5/6, 45.5/5
 });
 
 test("an idle weekend never breaks the active-day streak", () => {
   const days = dayRange("2026-10-08", "2026-10-12"); // Thu .. Mon
   const entries = new Map<string, LedgerEntry>(
-    ["2026-10-08", "2026-10-09", "2026-10-12"].map((day) => [day, entry(day, { reachouts: 5 })]),
+    ["2026-10-08", "2026-10-09", "2026-10-12"].map((day) => [
+      day,
+      entry(day, { reachouts: 5 }),
+    ]),
   );
-  const data = assembleLedger(days, entries, new Map(), "2026-10-12", "2026-10-08");
+  const data = assembleLedger(
+    days,
+    entries,
+    new Map(),
+    "2026-10-12",
+    "2026-10-08",
+  );
   expect(data.totals.activeDayStreak).toBe(3);
 });
 
@@ -230,7 +299,10 @@ test("a channel week paces emails and requests separately; unsplit touches do no
     connectionRequests: 12,
   });
   // Emails met (20/20), requests 4/10: 24 of 30 required sends, full hours.
-  expect(monday.scoreParts).toEqual({ goals: Math.round(70 * (24 / 30)), hours: 30 });
+  expect(monday.scoreParts).toEqual({
+    goals: Math.round(70 * (24 / 30)),
+    hours: 30,
+  });
   expect(data.weeks[0].goal.outreach).toEqual({
     kind: "channels",
     emails: 100,
@@ -258,12 +330,18 @@ test("assembleLedger aggregates Monday-through-Sunday weekly goals", () => {
   expect(data.weeks.length).toBe(1);
   const week = data.weeks[0];
   expect(week.touches).toBe(WEEKLY_REACHOUT_TARGET);
-  expect(week.hours).toBe(WEEKLY_HOURS_TARGET);
+  expect(week.creditedHours).toBe(WEEKLY_HOURS_TARGET);
   expect(week.outreachPct).toBe(1);
   expect(week.hoursPct).toBe(1);
   expect(week.weeklyValue).toBe(100);
   // The averages row covers the scored days, Monday to Friday.
-  expect(data.weekdayAverages.map((average) => average.weekday)).toEqual(["Mon", "Tue", "Wed", "Thu", "Fri"]);
+  expect(data.weekdayAverages.map((average) => average.weekday)).toEqual([
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+  ]);
 });
 
 test("weekly targets stay historical while unsaved gaps inherit the latest earlier goal", () => {
@@ -433,7 +511,15 @@ test("hitting every weekday bar and the hours bar scores every day 100", () => {
         : null,
     ),
   ).toEqual([14, 14, 14, 14, 14, null, null]);
-  expect(data.days.map((day) => day.dailyValue)).toEqual([100, 100, 100, 100, 100, null, null]);
+  expect(data.days.map((day) => day.dailyValue)).toEqual([
+    100,
+    100,
+    100,
+    100,
+    100,
+    null,
+    null,
+  ]);
 });
 
 test("a later week's goal cannot move an earlier week's day or week scores", () => {

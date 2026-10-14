@@ -25,8 +25,10 @@ type WeeklyRow = {
   weekStart: string;
   label: string;
   weeklyValue: number;
-  touches: number;
-  hours: number;
+  touches: number; // what counts toward the week's outreach goal
+  hours: number; // credited hours
+  baseValue: number; // weeklyValue before the email bonus
+  emailBonus: number;
   touchesTarget: number;
   hoursTarget: number;
 };
@@ -68,7 +70,8 @@ export function LedgerCharts({ mode, dailyRows, weeklyRows, selectedDay, reduceM
           <RechartsBarChart data={weeklyRows} margin={chartMargin}>
             <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
             <XAxis dataKey="label" axisLine={false} tickLine={false} minTickGap={20} tick={axisTick} />
-            <YAxis domain={[0, 100]} ticks={AXIS_TICKS} axisLine={false} tickLine={false} width={30} tick={axisTick} />
+            {/* A week with email bonus runs past 100; its bar rises above the dashed 100 line. */}
+            <YAxis domain={[0, (dataMax: number) => Math.max(100, dataMax)]} ticks={AXIS_TICKS} axisLine={false} tickLine={false} width={30} tick={axisTick} />
             <Tooltip
               cursor={{ fill: "rgba(255,255,255,0.04)" }}
               content={({ active, payload }) => {
@@ -83,9 +86,10 @@ export function LedgerCharts({ mode, dailyRows, weeklyRows, selectedDay, reduceM
                   <div className="rounded-2xl border border-white/[0.08] bg-zinc-950/96 px-3 py-2 text-xs shadow-2xl backdrop-blur">
                     <p className="font-medium text-zinc-100">{week.label}</p>
                     <div className="mt-2 space-y-1 text-zinc-400">
-                      <div className="flex justify-between gap-6"><span>Activity score</span><span className="font-mono text-zinc-100">{week.weeklyValue}</span></div>
-                      <div className="flex justify-between gap-6"><span>Touches</span><span className="font-mono text-zinc-100">{week.touches}/{week.touchesTarget}</span></div>
+                      <div className="flex justify-between gap-6"><span>Activity score</span><span className="font-mono text-zinc-100">{week.baseValue}</span></div>
+                      <div className="flex justify-between gap-6"><span>Outreach</span><span className="font-mono text-zinc-100">{week.touches}/{week.touchesTarget}</span></div>
                       <div className="flex justify-between gap-6"><span>Hours</span><span className="font-mono text-zinc-100">{week.hours.toFixed(1)}/{week.hoursTarget}</span></div>
+                      {week.emailBonus > 0 ? <div className="flex justify-between gap-6"><span>Email bonus</span><span className="font-mono text-emerald-300">+{week.emailBonus}</span></div> : null}
                     </div>
                   </div>
                 );

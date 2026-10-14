@@ -8,11 +8,14 @@ import {
 import { isMirrorHost, readLatestMirror } from "@/lib/mirror";
 import { setLedgerEntry, setWeeklyGoal } from "@/lib/store";
 import { getOptionalEnv } from "@/lib/env";
-import { MANUAL_COUNT_FIELDS, MAX_DAILY_COUNT, isDailyCount } from "@/lib/ledger-fields";
+import {
+  MANUAL_COUNT_FIELDS,
+  MAX_DAILY_COUNT,
+  isDailyCount,
+} from "@/lib/ledger-fields";
 import type { LedgerDayPatch } from "@/lib/ledger";
-import { channelWeeklyGoal, validateWeeklyGoal } from "@/lib/weekly-goal";
+import { connectionRequestGoal, validateWeeklyGoal } from "@/lib/weekly-goal";
 import { isValidDayKey, localDayKey, weekStartForDay } from "@/lib/time";
-
 
 export const dynamic = "force-dynamic";
 
@@ -55,29 +58,60 @@ export async function POST(request: Request) {
     // so a request cannot partially update both contracts.
     if (body.weekStart !== undefined) {
       const weekStart = body.weekStart;
-      const weeklyEmails = body.weeklyEmails;
       const weeklyConnectionRequests = body.weeklyConnectionRequests;
       const weeklyHours = body.weeklyHours;
+      // Emails are bonus, never a goal; an old page still sending one is
+      // refused rather than silently dropped.
+      if (body.weeklyEmails !== undefined) {
+        return Response.json(
+          { error: "weeklyEmails is not a goal; emails are bonus" },
+          { status: 400 },
+        );
+      }
       const currentMonday = weekStartForDay(localDayKey(new Date()));
-      const validation = validateWeeklyGoal(weekStart, weeklyEmails, weeklyConnectionRequests, weeklyHours);
-      if (body.day !== undefined || !validation.ok || typeof weekStart !== "string" || weekStart > currentMonday) {
-        return Response.json({ error: !validation.ok ? validation.error : "weekStart must be a displayed Monday week" }, { status: 400 });
+      const validation = validateWeeklyGoal(
+        weekStart,
+        weeklyConnectionRequests,
+        weeklyHours,
+      );
+      if (
+        body.day !== undefined ||
+        !validation.ok ||
+        typeof weekStart !== "string" ||
+        weekStart > currentMonday
+      ) {
+        return Response.json(
+          {
+            error: !validation.ok
+              ? validation.error
+              : "weekStart must be a displayed Monday week",
+          },
+          { status: 400 },
+        );
       }
       const displayedLedger = await getDisplayedLedger();
-      const displayed = displayedLedger?.weeks.some((week) => week.weekStart === weekStart) ?? false;
+      const displayed =
+        displayedLedger?.weeks.some((week) => week.weekStart === weekStart) ??
+        false;
       if (!displayed) {
-        return Response.json({ error: "weekStart must be a displayed Monday week" }, { status: 400 });
+        return Response.json(
+          { error: "weekStart must be a displayed Monday week" },
+          { status: 400 },
+        );
       }
-      const emails = weeklyEmails as number;
       const connectionRequests = weeklyConnectionRequests as number;
       const hours = weeklyHours as number;
       if (isMirrorHost()) {
-        const { weekStart: _key, ...stored } = channelWeeklyGoal(weekStart, emails, connectionRequests, hours);
+        const { weekStart: _key, ...stored } = connectionRequestGoal(
+          weekStart,
+          connectionRequests,
+          hours,
+        );
         await saveLedgerWeekOverride(weekStart, stored);
         revalidateCaptures();
         return Response.json({ goal: { weekStart, ...stored } });
       }
-      const goal = await setWeeklyGoal(weekStart, emails, connectionRequests, hours);
+      const goal = await setWeeklyGoal(weekStart, connectionRequests, hours);
       revalidateCaptures();
       return Response.json({ goal });
     }
@@ -85,23 +119,37 @@ export async function POST(request: Request) {
     const day = body.day as string;
 
     if (typeof day !== "string" || !isValidDayKey(day)) {
-      return Response.json({ error: "day must be YYYY-MM-DD" }, { status: 400 });
+      return Response.json(
+        { error: "day must be YYYY-MM-DD" },
+        { status: 400 },
+      );
     }
 
     if (day > localDayKey(new Date())) {
-      return Response.json({ error: "cannot log a future day" }, { status: 400 });
+      return Response.json(
+        { error: "cannot log a future day" },
+        { status: 400 },
+      );
     }
 
     const featureDone = body.featureDone;
     if (featureDone !== undefined && typeof featureDone !== "boolean") {
-      return Response.json({ error: "featureDone must be a boolean" }, { status: 400 });
+      return Response.json(
+        { error: "featureDone must be a boolean" },
+        { status: 400 },
+      );
     }
 
     // commits/merges are written by the accountability engine from GitHub, never
     // by a browser client. Reject an attempt to set them so a stray field is
     // surfaced, not silently dropped.
     if (body.commits !== undefined || body.merges !== undefined) {
-      return Response.json({ error: "commits and merges are server-written and cannot be set here" }, { status: 400 });
+      return Response.json(
+        {
+          error: "commits and merges are server-written and cannot be set here",
+        },
+        { status: 400 },
+      );
     }
 
     const fields: LedgerDayPatch = {};
@@ -110,7 +158,10 @@ export async function POST(request: Request) {
       const value = body[field];
       if (value === undefined) continue;
       if (!isDailyCount(value)) {
-        return Response.json({ error: `${field} must be an integer from 0 to ${MAX_DAILY_COUNT}` }, { status: 400 });
+        return Response.json(
+          { error: `${field} must be an integer from 0 to ${MAX_DAILY_COUNT}` },
+          { status: 400 },
+        );
       }
       fields[field] = value;
     }

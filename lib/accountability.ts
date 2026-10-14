@@ -3,11 +3,6 @@ import { getOptionalEnv } from "@/lib/env";
 import { syncCortalActivity } from "@/lib/github-activity";
 import { getDisplayedLedger } from "@/lib/ledger-server";
 import {
-  outreachBarTotal,
-  outreachDone,
-  outreachTally,
-} from "@/lib/outreach-pace";
-import {
   appendNudgeMessage,
   getSettings,
   latestSnapshot,
@@ -372,18 +367,14 @@ export async function evaluateAndNudge(now: Date = new Date()): Promise<void> {
     activity && activity.commits > 0 ? activity.lastCommitAt : null;
 
   // Pace against the same assembled ledger the board shows (the deployed
-  // overlay included), so a nudge can never disagree with the day report.
-  // Saturday and Sunday carry no outreach bar, so no checkpoint fires then.
+  // overlay included), so a nudge can never disagree with the day report: the
+  // day's 1st touches, where bonus emails never count. Saturday and Sunday
+  // carry no sends, so no checkpoint fires then.
   const ledger = await getDisplayedLedger(now);
   const todayRow = ledger?.days.find((day) => day.day === today) ?? null;
-  const outreachBar = todayRow?.targets?.outreach ?? null;
-  const dailyOutreachTarget = outreachBar
-    ? outreachBarTotal(outreachBar)
-    : null;
-  const outreachSent =
-    todayRow && outreachBar
-      ? outreachDone(outreachTally(todayRow), outreachBar)
-      : 0;
+  const firstTouches = todayRow?.sends?.firstTouches ?? null;
+  const dailyOutreachTarget = firstTouches?.required ?? null;
+  const outreachSent = firstTouches?.done ?? 0;
 
   // Fire a nudge: send + log, marking sent only when BOTH succeed so a transient
   // Telegram failure re-fires next cycle instead of being silently dropped.

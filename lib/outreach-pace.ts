@@ -52,7 +52,10 @@ export function weekdaysLeft(day: string): number {
  * every day left through Sunday, because the weekly hours goal includes the
  * weekend; weekend hours are where a short week catches up.
  */
-export type PaceOptions = { decimals?: number; spreadOver?: "weekdays" | "week" };
+export type PaceOptions = {
+  decimals?: number;
+  spreadOver?: "weekdays" | "week";
+};
 
 /**
  * One day's catch-up bar for one weekly number.
@@ -98,7 +101,8 @@ export function catchUpBar(
   if (!isOutreachDay(day)) {
     return null;
   }
-  const left = spreadOver === "weekdays" ? weekdaysLeft(day) : 7 - mondayIndex(day);
+  const left =
+    spreadOver === "weekdays" ? weekdaysLeft(day) : 7 - mondayIndex(day);
   const factor = 10 ** decimals;
   const share = Math.max(0, weeklyGoal - loggedEarlier) / left;
   // The epsilon keeps float noise (11.000000001) from rounding up a whole step.
@@ -134,7 +138,10 @@ export function dailyOutreachBar(
  * Each channel is capped at its own bar before they are combined, so extra
  * emails never cover skipped requests.
  */
-export function outreachRequirement(tally: OutreachTally, bar: OutreachGoal): { required: number; done: number } {
+export function outreachRequirement(
+  tally: OutreachTally,
+  bar: OutreachGoal,
+): { required: number; done: number } {
   if (bar.kind === "touches") {
     const required = Math.max(0, bar.touches);
     return { required, done: Math.min(tally.touches, required) };
@@ -143,12 +150,17 @@ export function outreachRequirement(tally: OutreachTally, bar: OutreachGoal): { 
   const requests = Math.max(0, bar.connectionRequests);
   return {
     required: emails + requests,
-    done: Math.min(tally.emails, emails) + Math.min(tally.connectionRequests, requests),
+    done:
+      Math.min(tally.emails, emails) +
+      Math.min(tally.connectionRequests, requests),
   };
 }
 
 /** Share of an outreach bar cleared, 0 to 1. A bar of zero counts as met. */
-export function outreachProgress(tally: OutreachTally, bar: OutreachGoal): number {
+export function outreachProgress(
+  tally: OutreachTally,
+  bar: OutreachGoal,
+): number {
   const { required, done } = outreachRequirement(tally, bar);
   return required > 0 ? done / required : 1;
 }
@@ -160,9 +172,24 @@ export function outreachBarTotal(bar: OutreachGoal): number {
     : bar.emails + bar.connectionRequests;
 }
 
-/** What counts toward a bar of this kind, as one number. */
-export function outreachDone(tally: OutreachTally, bar: OutreachGoal): number {
-  return bar.kind === "touches"
-    ? tally.touches
-    : tally.emails + tally.connectionRequests;
+/**
+ * True when a week's goal counts emails: a legacy touches goal (emails were
+ * touches) or a channel goal with an email number. Goals saved since Oct 13,
+ * 2026 ask for 0 emails, and their emails are bonus instead (see
+ * `weeklyProgress`), so no email is ever counted twice.
+ */
+export function countsEmails(goal: OutreachGoal): boolean {
+  return goal.kind === "touches" || goal.emails > 0;
+}
+
+/**
+ * What counts toward a week's goal, as one uncapped number: every new touch
+ * for a touches goal; requests, plus emails only when the goal counts them,
+ * for a channel goal.
+ */
+export function outreachDone(tally: OutreachTally, goal: OutreachGoal): number {
+  if (goal.kind === "touches") {
+    return tally.touches;
+  }
+  return (countsEmails(goal) ? tally.emails : 0) + tally.connectionRequests;
 }

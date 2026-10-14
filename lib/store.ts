@@ -28,8 +28,12 @@ import {
 } from "@/lib/time";
 import { RUBRIC_VERSION } from "@/lib/score";
 import { correctableFields, type CorrectableField } from "@/lib/feedback";
-import { channelWeeklyGoal, validateWeeklyGoal } from "@/lib/weekly-goal";
-import { MANUAL_COUNT_FIELDS, readManualCounts, type ManualCountField } from "@/lib/ledger-fields";
+import { channelWeeklyGoal, connectionRequestGoal, validateWeeklyGoal } from "@/lib/weekly-goal";
+import {
+  MANUAL_COUNT_FIELDS,
+  readManualCounts,
+  type ManualCountField,
+} from "@/lib/ledger-fields";
 import type { LedgerDayPatch } from "@/lib/ledger";
 import { sql } from "@/lib/sql";
 import { assertStorageMounted } from "@/lib/storage-availability";
@@ -66,7 +70,9 @@ type LocalState = {
 // (e.g. a mounted external drive) so data lives off the boot/SD volume; defaults
 // to the repo's .work-live for local dev.
 export function localDataRoot(): string {
-  return process.env.WORK_LIVE_DATA_DIR || path.join(process.cwd(), ".work-live");
+  return (
+    process.env.WORK_LIVE_DATA_DIR || path.join(process.cwd(), ".work-live")
+  );
 }
 
 const localRoot = localDataRoot();
@@ -378,11 +384,15 @@ const COLUMN_COUNT_FIELDS = {
   followUpsSent: "follow_ups_sent",
 } as const satisfies Partial<Record<ManualCountField, string>>;
 
-function isColumnCountField(field: ManualCountField): field is keyof typeof COLUMN_COUNT_FIELDS {
+function isColumnCountField(
+  field: ManualCountField,
+): field is keyof typeof COLUMN_COUNT_FIELDS {
   return field in COLUMN_COUNT_FIELDS;
 }
 
-function jsonCounts(fields: Partial<Record<ManualCountField, number>>): Record<string, number> {
+function jsonCounts(
+  fields: Partial<Record<ManualCountField, number>>,
+): Record<string, number> {
   const out: Record<string, number> = {};
   for (const field of MANUAL_COUNT_FIELDS) {
     const value = fields[field];
@@ -402,7 +412,9 @@ function mapLedgerEntry(row: Record<string, unknown>): LedgerEntry {
     merges: Number(row.merges),
   };
   for (const field of MANUAL_COUNT_FIELDS) {
-    const value = isColumnCountField(field) ? row[COLUMN_COUNT_FIELDS[field]] : stored[field];
+    const value = isColumnCountField(field)
+      ? row[COLUMN_COUNT_FIELDS[field]]
+      : stored[field];
     entry[field] = Number(value ?? 0);
   }
   return entry;
@@ -412,7 +424,12 @@ function mapWeeklyGoal(row: Record<string, unknown>): WeeklyGoal {
   const weekStart = String(row.week_start).slice(0, 10);
   const hours = Number(row.hours);
   if (row.emails != null && row.connection_requests != null) {
-    return channelWeeklyGoal(weekStart, Number(row.emails), Number(row.connection_requests), hours);
+    return channelWeeklyGoal(
+      weekStart,
+      Number(row.emails),
+      Number(row.connection_requests),
+      hours,
+    );
   }
   return { weekStart, reachouts: Number(row.reachouts), hours };
 }
@@ -439,21 +456,21 @@ export async function saveSnapshot(
 ): Promise<SnapshotRow> {
   const capturedAt = input.capturedAt ?? new Date();
   const buildRow = (id: string, stored: string): SnapshotRow => ({
-      id,
-      capturedAt: capturedAt.toISOString(),
-      ...input.signals,
-      ...input.score,
-      // Expose a cacheable route URL, not the raw bytes; the thumbnail itself lives
-      // in the `thumb_url` column (data URI) or local file and is served by the route.
-      thumbUrl: `/api/thumb/${id}`,
-      frameHash: input.frameHash ?? null,
-      captureSource: input.captureSource ?? null,
-      frameSignature: input.frameSignature ?? null,
-      proofSignature: input.proofSignature ?? null,
-      livenessStatus: input.livenessStatus ?? null,
-      livenessScore: input.livenessScore ?? null,
-      visionModel: input.visionModel ?? null,
-    });
+    id,
+    capturedAt: capturedAt.toISOString(),
+    ...input.signals,
+    ...input.score,
+    // Expose a cacheable route URL, not the raw bytes; the thumbnail itself lives
+    // in the `thumb_url` column (data URI) or local file and is served by the route.
+    thumbUrl: `/api/thumb/${id}`,
+    frameHash: input.frameHash ?? null,
+    captureSource: input.captureSource ?? null,
+    frameSignature: input.frameSignature ?? null,
+    proofSignature: input.proofSignature ?? null,
+    livenessStatus: input.livenessStatus ?? null,
+    livenessScore: input.livenessScore ?? null,
+    visionModel: input.visionModel ?? null,
+  });
 
   if (hasPostgresConfig()) {
     const id = randomUUID();
@@ -519,11 +536,15 @@ export async function latestSnapshot(): Promise<SnapshotRow | null> {
 }
 
 /** Returns the previously persisted row for one local capture retry key. */
-export async function snapshotForCaptureAttempt(attemptId: string): Promise<SnapshotRow | null> {
+export async function snapshotForCaptureAttempt(
+  attemptId: string,
+): Promise<SnapshotRow | null> {
   if (hasPostgresConfig()) return null;
   const state = await readLocalState();
   const id = state.captureAttempts?.[attemptId];
-  return id ? state.snapshots.find((snapshot) => snapshot.id === id) ?? null : null;
+  return id
+    ? (state.snapshots.find((snapshot) => snapshot.id === id) ?? null)
+    : null;
 }
 
 export async function snapshotsSince(since: Date): Promise<SnapshotRow[]> {
@@ -559,7 +580,9 @@ export type CaptureStoreStatus = {
  * three independent external-drive reads. Postgres keeps the equivalent query
  * behavior, while local storage gets one consistent point-in-time view.
  */
-export async function readCaptureStoreStatus(since: Date): Promise<CaptureStoreStatus> {
+export async function readCaptureStoreStatus(
+  since: Date,
+): Promise<CaptureStoreStatus> {
   if (hasPostgresConfig()) {
     const [settings, latest, recentSnapshots] = await Promise.all([
       getSettings(),
@@ -571,14 +594,23 @@ export async function readCaptureStoreStatus(since: Date): Promise<CaptureStoreS
 
   const state = await readLocalState();
   const snapshots = [...state.snapshots].sort(
-    (left, right) => new Date(right.capturedAt).getTime() - new Date(left.capturedAt).getTime(),
+    (left, right) =>
+      new Date(right.capturedAt).getTime() -
+      new Date(left.capturedAt).getTime(),
   );
   return {
     settings: state.settings,
     latest: snapshots[0] ?? null,
     recentSnapshots: snapshots
-      .filter((snapshot) => new Date(snapshot.capturedAt).getTime() >= since.getTime())
-      .sort((left, right) => new Date(left.capturedAt).getTime() - new Date(right.capturedAt).getTime()),
+      .filter(
+        (snapshot) =>
+          new Date(snapshot.capturedAt).getTime() >= since.getTime(),
+      )
+      .sort(
+        (left, right) =>
+          new Date(left.capturedAt).getTime() -
+          new Date(right.capturedAt).getTime(),
+      ),
   };
 }
 
@@ -1592,29 +1624,29 @@ export async function getWeeklyGoals(): Promise<WeeklyGoal[]> {
 }
 
 /**
- * Saves one effective-dated, per-channel weekly goal. The row applies from
- * `weekStart` forward until a later row; no other week row is changed.
+ * Saves one effective-dated connection-request goal (emails are bonus, stored
+ * as an email goal of 0). The row applies from `weekStart` forward until a
+ * later row; no other week row is changed.
  *
  * Preconditions: the arguments pass `validateWeeklyGoal`. Postcondition: a
- * subsequent `getWeeklyGoals` returns the supplied values for exactly that
- * week, with `reachouts` = emails + connectionRequests.
+ * subsequent `getWeeklyGoals` returns `connectionRequestGoal` of the supplied
+ * values for exactly that week.
  */
 export async function setWeeklyGoal(
   weekStart: string,
-  emails: number,
   connectionRequests: number,
   hours: number,
 ): Promise<WeeklyGoal> {
-  const validation = validateWeeklyGoal(weekStart, emails, connectionRequests, hours);
+  const validation = validateWeeklyGoal(weekStart, connectionRequests, hours);
   if (!validation.ok) {
     throw new Error(validation.error);
   }
-  const goal = channelWeeklyGoal(weekStart, emails, connectionRequests, hours);
+  const goal = connectionRequestGoal(weekStart, connectionRequests, hours);
   if (hasPostgresConfig()) {
     const sql = await sqlClient();
     const result = await sql`
       INSERT INTO weekly_goals (week_start, reachouts, hours, emails, connection_requests, updated_at)
-      VALUES (${weekStart}, ${goal.reachouts}, ${hours}, ${emails}, ${connectionRequests}, now())
+      VALUES (${weekStart}, ${goal.reachouts}, ${hours}, ${goal.emails}, ${connectionRequests}, now())
       ON CONFLICT (week_start) DO UPDATE SET
         reachouts = EXCLUDED.reachouts,
         hours = EXCLUDED.hours,

@@ -45,8 +45,8 @@ export function ledgerDayAriaLabel(day: LedgerDay): string {
   }
 
   if (day.dailyValue === null) {
-    return `${day.weekdayLabel} ${day.label}: weekend, ${day.hours.toFixed(1)} extra hours, ${newTouches(day)} touches`;
+    return `${day.weekdayLabel} ${day.label}: weekend, ${day.creditedHours.toFixed(1)} extra hours, ${newTouches(day)} touches`;
   }
 
-  return `${day.weekdayLabel} ${day.label}: ${day.dailyValue} activity points, ${newTouches(day)} touches, ${day.hours.toFixed(1)} hours`;
+  return `${day.weekdayLabel} ${day.label}: ${day.dailyValue} activity points, ${newTouches(day)} touches, ${day.creditedHours.toFixed(1)} hours`;
 }

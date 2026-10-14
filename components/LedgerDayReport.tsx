@@ -11,9 +11,13 @@ import {
   UNSPLIT_COUNT_FIELDS,
   type ManualCountField,
 } from "@/lib/ledger-fields";
-import type { LedgerDay } from "@/lib/ledger";
+import {
+  AWAY_HOURS_CREDIT,
+  EMAIL_BONUS_MAX_POINTS,
+  type LedgerDay,
+} from "@/lib/ledger";
 import { progressState, statusTone, type ProgressState } from "@/lib/ledger-ui";
-import { outreachDone, outreachTally } from "@/lib/outreach-pace";
+import { outreachTally } from "@/lib/outreach-pace";
 import { cn } from "@/lib/utils";
 
 export type SaveState = "idle" | "saving" | "error";
@@ -23,12 +27,22 @@ export type LedgerDayReportProps = {
   onAuthenticate: (secret: string) => Promise<void>;
   /** The selected day with unsaved drafts already applied and re-scored. */
   day: LedgerDay;
+  /**
+   * Bonus points the day's week has from emails so far, or null when that
+   * week's goal counts emails (weeks saved before Oct 13, 2026).
+   */
+  emailBonus: number | null;
   saveStateOf: (field: ManualCountField) => SaveState;
   onCountChange: (field: ManualCountField, value: number) => void;
   onCountRetry: (field: ManualCountField) => void;
 };
 
 const QUICK_ADJUSTMENTS = [5, 10, 25] as const;
+
+// Away time is stored in minutes and entered in half hours, up to the whole
+// hours the stored count allows.
+const AWAY_STEP_HOURS = 0.5;
+const AWAY_MAX_HOURS = Math.floor(MAX_DAILY_COUNT / 60);
 
 const UNSPLIT_LABELS: Record<(typeof UNSPLIT_COUNT_FIELDS)[number], string> = {
   reachouts: "Touches",
@@ -76,7 +90,12 @@ type RowProps = {
   /** Renders a progress bar and quick-add buttons for the day's high-volume inputs. */
   goal?: number;
   quickAdd?: boolean;
-} & Pick<LedgerDayReportProps, "saveStateOf" | "onCountChange" | "onCountRetry">;
+  /** The count is stored in minutes but entered in half hours. */
+  inHours?: boolean;
+} & Pick<
+  LedgerDayReportProps,
+  "saveStateOf" | "onCountChange" | "onCountRetry"
+>;
 
 // One loggable count: label and its context on the left, the stepper on the
 // right. Saving and retry live on the row so a failure points at its field.
@@ -88,11 +107,13 @@ function CountRow({
   detailState,
   goal,
   quickAdd,
+  inHours,
   saveStateOf,
   onCountChange,
   onCountRetry,
 }: RowProps) {
   const saveState = saveStateOf(field);
+  const shown = inHours ? value / 60 : value;
   return (
     <div className="py-3 first:pt-1 last:pb-1">
       <div className="flex items-center justify-between gap-3">
@@ -124,15 +145,27 @@ function CountRow({
             </button>
           ) : null}
           <NumberField.Root
-            aria-label={`${label} on this day`}
-            value={value}
+            aria-label={`${label} on this day${inHours ? ", in hours" : ""}`}
+            value={shown}
             minValue={0}
-            maxValue={MAX_DAILY_COUNT}
-            step={1}
-            formatOptions={{ useGrouping: false }}
-            onChange={(next) =>
-              onCountChange(field, Number.isNaN(next) ? 0 : next)
+            maxValue={inHours ? AWAY_MAX_HOURS : MAX_DAILY_COUNT}
+            step={inHours ? AWAY_STEP_HOURS : 1}
+            formatOptions={
+              inHours
+                ? { useGrouping: false, maximumFractionDigits: 1 }
+                : { useGrouping: false }
             }
+            onChange={(next) => {
+              const entered = Number.isNaN(next) ? 0 : next;
+              onCountChange(
+                field,
+                // Snap to the half-hour grid so stored minutes and the shown
+                // hours never drift apart.
+                inHours
+                  ? Math.round(entered / AWAY_STEP_HOURS) * AWAY_STEP_HOURS * 60
+                  : entered,
+              );
+            }}
           >
             <NumberField.Group className="flex h-10 items-center rounded-xl border border-white/[0.08] bg-black/20 px-0.5">
               <NumberField.DecrementButton
@@ -226,14 +259,31 @@ function dueDetail(
   };
 }
 
-// Answers owed count toward the day's goals, so the row says so.
-function answerDetail(value: number, due: number | undefined): { detail?: string; detailState?: ProgressState } {
+// Answers and first messages owed count toward the day's goals, so the row
+// says so.
+function owedDetail(
+  value: number,
+  due: number | undefined,
+  verb: "answer" | "message",
+): { detail?: string; detailState?: ProgressState } {
   if (due === undefined) return {};
-  if (due === 0) return { detail: "Everyone answered" };
+  if (due === 0) return { detail: `Everyone ${verb}ed` };
   return {
-    detail: `${Math.min(value, due)} of ${due} to answer · counts toward goals`,
+    detail: `${Math.min(value, due)} of ${due} to ${verb} · counts toward goals`,
     detailState: progressState(value, due),
   };
+}
+
+// Where the day's hours come from: the desk (captures) and, when logged,
+// away time at its discount.
+function hoursSource(day: LedgerDay): string {
+  const desk = `${day.hours.toFixed(1)} h at desk`;
+  if (day.awayMinutes === 0) {
+    return `${desk} · auto from Tally`;
+  }
+  const away = (day.awayMinutes / 60).toFixed(1);
+  const counted = (day.creditedHours - day.hours).toFixed(1);
+  return `${desk} + ${away} h away (counts ${counted} h)`;
 }
 
 /**
@@ -245,6 +295,7 @@ export function LedgerDayReport({
   sessionRequired,
   onAuthenticate,
   day,
+  emailBonus,
   saveStateOf,
   onCountChange,
   onCountRetry,
@@ -254,16 +305,20 @@ export function LedgerDayReport({
   const hoursTarget = day.targets?.hours ?? null;
   const channelBars = bar?.kind === "channels" ? bar : null;
   const touchesBar = bar?.kind === "touches" ? bar : null;
-  const touchesToday = bar ? outreachDone(outreachTally(day), bar) : 0;
+  const touchesToday = outreachTally(day).touches;
   const unsplitFields = UNSPLIT_COUNT_FIELDS.filter((field) => day[field] > 0);
-  const hoursState = hoursTarget === null ? null : progressState(day.hours, hoursTarget);
+  const hoursState =
+    hoursTarget === null ? null : progressState(day.creditedHours, hoursTarget);
 
   return (
     <div className="space-y-3">
-      {sessionRequired ? <LedgerOwnerAccess onAuthenticate={onAuthenticate} /> : null}
+      {sessionRequired ? (
+        <LedgerOwnerAccess onAuthenticate={onAuthenticate} />
+      ) : null}
       {bar === null ? (
         <p className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-xs leading-5 text-zinc-400">
-          Weekend: no goals. Hours, follow-ups, and anything else you log count toward the week as extra work.
+          Weekend: no goals. Hours, follow-ups, and anything else you log count
+          toward the week as extra work.
         </p>
       ) : null}
 
@@ -310,13 +365,17 @@ export function LedgerDayReport({
           field="emailsSent"
           label="Sent"
           value={day.emailsSent}
-          quickAdd
-          {...(channelBars
+          {...(emailBonus !== null
             ? {
-                goal: channelBars.emails,
-                ...goalDetail(day.emailsSent, channelBars.emails),
+                detail: `Bonus · +${emailBonus} of ${EMAIL_BONUS_MAX_POINTS} on the week`,
               }
-            : {})}
+            : channelBars
+              ? {
+                  quickAdd: true,
+                  goal: channelBars.emails,
+                  ...goalDetail(day.emailsSent, channelBars.emails),
+                }
+              : { quickAdd: true })}
           {...rowProps}
         />
         <CountRow
@@ -340,7 +399,11 @@ export function LedgerDayReport({
           field="emailRepliesAnswered"
           label="Replies answered"
           value={day.emailRepliesAnswered}
-          {...answerDetail(day.emailRepliesAnswered, day.due?.emailRepliesAnswered)}
+          {...owedDetail(
+            day.emailRepliesAnswered,
+            day.due?.emailRepliesAnswered,
+            "answer",
+          )}
           {...rowProps}
         />
         <CountRow
@@ -378,10 +441,10 @@ export function LedgerDayReport({
           field="linkedinMessages"
           label="First messages"
           value={day.linkedinMessages}
-          {...dueDetail(
+          {...owedDetail(
             day.linkedinMessages,
             day.due?.linkedinMessages,
-            "accepted, not yet messaged",
+            "message",
           )}
           {...rowProps}
         />
@@ -395,7 +458,11 @@ export function LedgerDayReport({
           field="linkedinRepliesAnswered"
           label="Replies answered"
           value={day.linkedinRepliesAnswered}
-          {...answerDetail(day.linkedinRepliesAnswered, day.due?.linkedinRepliesAnswered)}
+          {...owedDetail(
+            day.linkedinRepliesAnswered,
+            day.due?.linkedinRepliesAnswered,
+            "answer",
+          )}
           {...rowProps}
         />
         <CountRow
@@ -430,24 +497,54 @@ export function LedgerDayReport({
 
       <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4">
         <div className="flex items-center justify-between">
-          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-500">Hours</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-zinc-500">
+            Hours
+          </p>
           {hoursState ? (
-            <span className={cn("text-xs font-medium capitalize", statusTone(hoursState))}>{hoursState}</span>
+            <span
+              className={cn(
+                "text-xs font-medium capitalize",
+                statusTone(hoursState),
+              )}
+            >
+              {hoursState}
+            </span>
           ) : (
             <span className="text-xs text-zinc-500">Extra</span>
           )}
         </div>
         <div className="mt-2 flex items-end gap-2">
-          <Num className="text-2xl font-semibold leading-none text-zinc-50">{day.hours.toFixed(1)}</Num>
+          <Num className="text-2xl font-semibold leading-none text-zinc-50">
+            {day.creditedHours.toFixed(1)}
+          </Num>
           <span className="pb-0.5 text-sm text-zinc-500">
-            {hoursTarget === null ? "no goal on weekends" : `/ ${hoursTarget.toFixed(1)}`} · auto from Tally
+            {hoursTarget === null
+              ? "no goal on weekends"
+              : `/ ${hoursTarget.toFixed(1)}`}
           </span>
         </div>
+        <p className="mt-1 text-[11px] tabular-nums text-zinc-500">
+          {hoursSource(day)}
+        </p>
         {hoursTarget !== null ? (
           <div className="mt-2">
-            <Bar value={day.hours} target={hoursTarget} gradient={HOURS_GRADIENT} />
+            <Bar
+              value={day.creditedHours}
+              target={hoursTarget}
+              gradient={HOURS_GRADIENT}
+            />
           </div>
         ) : null}
+        <div className="mt-3 border-t border-white/[0.05] pt-1">
+          <CountRow
+            field="awayMinutes"
+            label="Away from desk"
+            value={day.awayMinutes}
+            detail={`Hours the camera can't see · count at ${AWAY_HOURS_CREDIT * 100}%`}
+            inHours
+            {...rowProps}
+          />
+        </div>
       </section>
     </div>
   );

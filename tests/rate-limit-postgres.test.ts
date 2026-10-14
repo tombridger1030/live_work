@@ -263,7 +263,12 @@ test("ledger route saves per-channel counts and rejects the retired single-numbe
 
     const retiredGoal = await post({ weekStart: "2026-10-05", weeklyReachouts: 150, weeklyHours: 55 });
     expect(retiredGoal.status).toBe(400);
-    expect(await retiredGoal.json()).toEqual({ error: "weeklyEmails must be an integer from 0 to 10000" });
+    expect(await retiredGoal.json()).toEqual({ error: "weeklyConnectionRequests must be an integer from 1 to 10000" });
+
+    // Emails are bonus since Oct 13, 2026: an email goal is refused, never dropped.
+    const emailGoal = await post({ weekStart: "2026-10-05", weeklyEmails: 50, weeklyConnectionRequests: 100, weeklyHours: 55 });
+    expect(emailGoal.status).toBe(400);
+    expect(await emailGoal.json()).toEqual({ error: "weeklyEmails is not a goal; emails are bonus" });
   } finally {
     setNodeEnv(previousNodeEnv);
     if (previousPostgresUrl === undefined) delete process.env.POSTGRES_URL;

@@ -21,10 +21,21 @@ import type { SaveState } from "@/components/LedgerDayReport";
 import { Num } from "@/components/Num";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { clampDailyCount, type ManualCountField } from "@/lib/ledger-fields";
-import { GOALS_POINTS, HOURS_POINTS, reassembleLedger } from "@/lib/ledger";
+import {
+  EMAIL_BONUS_MAX_POINTS,
+  EMAIL_BONUS_POINTS_PER_EMAIL,
+  GOALS_POINTS,
+  HOURS_POINTS,
+  reassembleLedger,
+} from "@/lib/ledger";
 import type { LedgerData, LedgerDay, LedgerDayPatch } from "@/lib/ledger";
 import { ledgerDayAriaLabel } from "@/lib/ledger-ui";
-import { outreachBarTotal } from "@/lib/outreach-pace";
+import {
+  countsEmails,
+  outreachBarTotal,
+  outreachDone,
+  outreachTally,
+} from "@/lib/outreach-pace";
 import { cn } from "@/lib/utils";
 import {
   appQuick,
@@ -64,7 +75,7 @@ function dayTone(day: LedgerDay): string {
     return "bg-white/[0.012] text-transparent";
   }
   if (day.dailyValue === null) {
-    return day.hours > 0
+    return day.creditedHours > 0
       ? "bg-indigo-400/10 text-zinc-100"
       : "bg-zinc-900/40 text-zinc-500";
   }
@@ -197,11 +208,10 @@ export function Ledger({ data, mirror }: LedgerProps) {
           weekStart: week.weekStart,
           label: week.label,
           weeklyValue: week.weeklyValue,
-          touches:
-            week.goal.outreach.kind === "touches"
-              ? week.touches
-              : week.counts.emailsSent + week.counts.connectionRequests,
-          hours: week.hours,
+          touches: outreachDone(outreachTally(week.counts), week.goal.outreach),
+          hours: week.creditedHours,
+          baseValue: week.baseValue,
+          emailBonus: week.emailBonus,
           touchesTarget: outreachBarTotal(week.goal.outreach),
           hoursTarget: week.goal.hours,
         })),
@@ -220,6 +230,10 @@ export function Ledger({ data, mirror }: LedgerProps) {
     [viewWeeks],
   );
   const selectedDayData = viewDayMap.get(selectedDay) ?? null;
+  const selectedWeek =
+    viewWeeks.find((week) =>
+      week.days.some((day) => day.day === selectedDay),
+    ) ?? null;
   const summaryWeek =
     viewWeeks.find((week) => week.days.some((day) => day.day === data.today)) ??
     viewWeeks[viewWeeks.length - 1] ??
@@ -281,13 +295,11 @@ export function Ledger({ data, mirror }: LedgerProps) {
 
   function persistWeeklyGoal(
     weekStart: string,
-    emails: number,
     connectionRequests: number,
     hours: number,
   ) {
     return postLedger({
       weekStart,
-      weeklyEmails: emails,
       weeklyConnectionRequests: connectionRequests,
       weeklyHours: hours,
     });
@@ -381,16 +393,23 @@ export function Ledger({ data, mirror }: LedgerProps) {
       : "idle";
 
   const outreachGoal = summaryWeek?.goal.outreach ?? null;
+  // Emails earn bonus points, not a bar, in a week whose goal asks for none.
+  const summaryBonusApplies =
+    outreachGoal !== null && !countsEmails(outreachGoal);
   const summaryStats = summaryWeek
     ? [
         ...(outreachGoal?.kind === "channels"
           ? [
-              {
-                label: "Emails",
-                value: summaryWeek.counts.emailsSent,
-                target: outreachGoal.emails,
-                accent: "from-blue-400/80 to-sky-300/90",
-              },
+              ...(summaryBonusApplies
+                ? []
+                : [
+                    {
+                      label: "Emails",
+                      value: summaryWeek.counts.emailsSent,
+                      target: outreachGoal.emails,
+                      accent: "from-blue-400/80 to-sky-300/90",
+                    },
+                  ]),
               {
                 label: "Requests",
                 value: summaryWeek.counts.connectionRequests,
@@ -408,7 +427,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
             ]),
         {
           label: "Hours",
-          value: summaryWeek.hours,
+          value: summaryWeek.creditedHours,
           target: summaryWeek.goal.hours,
           accent: "from-teal-400/80 to-emerald-300/90",
         },
@@ -433,7 +452,7 @@ export function Ledger({ data, mirror }: LedgerProps) {
             </span>
             <Num className="text-3xl font-semibold leading-none text-zinc-50">
               {selectedDayData.dailyValue === null
-                ? selectedDayData.hours.toFixed(1)
+                ? selectedDayData.creditedHours.toFixed(1)
                 : String(selectedDayData.dailyValue)}
             </Num>
           </div>
@@ -448,6 +467,23 @@ export function Ledger({ data, mirror }: LedgerProps) {
                 {selectedDayData.scoreParts.hours}
               </span>{" "}
               of {HOURS_POINTS}
+            </p>
+          ) : null}
+          {selectedDayData.sends ? (
+            <p className="mt-0.5 text-[11px] tabular-nums text-zinc-500">
+              {(
+                [
+                  ["1st touches", selectedDayData.sends.firstTouches],
+                  ["2nd touches", selectedDayData.sends.secondTouches],
+                  ["Replies", selectedDayData.sends.replies],
+                ] as const
+              ).map(([label, send], index) => (
+                <Fragment key={label}>
+                  {index > 0 ? " · " : null}
+                  {label} <span className="text-zinc-300">{send.done}</span> of{" "}
+                  {send.required}
+                </Fragment>
+              ))}
             </p>
           ) : null}
         </div>
@@ -468,6 +504,11 @@ export function Ledger({ data, mirror }: LedgerProps) {
           sessionRequired={sessionRequired}
           onAuthenticate={authenticateOwner}
           day={selectedDayData}
+          emailBonus={
+            selectedWeek && !countsEmails(selectedWeek.goal.outreach)
+              ? selectedWeek.emailBonus
+              : null
+          }
           saveStateOf={saveStateOf}
           onCountChange={handleCountChange}
           onCountRetry={handleCountRetry}
@@ -509,8 +550,13 @@ export function Ledger({ data, mirror }: LedgerProps) {
                   Activity score
                 </span>
                 <Num className="text-lg font-semibold text-zinc-50">
-                  {String(summaryWeek.weeklyValue)}
+                  {String(summaryWeek.baseValue)}
                 </Num>
+                {summaryWeek.emailBonus > 0 ? (
+                  <span className="text-xs tabular-nums text-emerald-300">
+                    + {summaryWeek.emailBonus} bonus
+                  </span>
+                ) : null}
               </div>
             </div>
             <div
@@ -552,6 +598,14 @@ export function Ledger({ data, mirror }: LedgerProps) {
             </div>
             <p className="mt-4 text-xs text-zinc-400">
               Goals paced Monday to Friday; weekends are extra ·{" "}
+              {summaryBonusApplies ? (
+                <>
+                  <span className="text-zinc-200">
+                    {summaryWeek.counts.emailsSent}
+                  </span>{" "}
+                  bonus emails (+{EMAIL_BONUS_POINTS_PER_EMAIL} each, up to {EMAIL_BONUS_MAX_POINTS}) ·{" "}
+                </>
+              ) : null}
               <span className="text-zinc-200">{summaryWeek.commits}</span>{" "}
               commits ·{" "}
               <span className="text-zinc-200">{summaryWeek.merges}</span> merges
@@ -722,8 +776,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
                         {day.inRange ? (
                           <Num className="self-end text-base font-semibold leading-none">
                             {day.dailyValue === null
-                              ? day.hours > 0
-                                ? `${day.hours.toFixed(1)}h`
+                              ? day.creditedHours > 0
+                                ? `${day.creditedHours.toFixed(1)}h`
                                 : "–"
                               : String(day.dailyValue)}
                           </Num>

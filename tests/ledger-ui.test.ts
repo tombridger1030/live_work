@@ -19,11 +19,17 @@ const sampleDay: LedgerDay = {
   inRange: true,
   state: "today",
   hours: 10.5,
+  creditedHours: 10.5,
   featureDone: true,
   commits: 0,
   merges: 0,
   targets: { outreach: { kind: "touches", touches: 36 }, hours: 10 },
   due: null,
+  sends: {
+    firstTouches: { required: 36, done: 36 },
+    secondTouches: { required: 0, done: 0 },
+    replies: { required: 0, done: 0 },
+  },
   dailyValue: 100,
   scoreParts: { goals: 70, hours: 30 },
   active: true,
@@ -59,8 +65,20 @@ test("ledgerDayAriaLabel exposes the raw day facts for assistive tech", () => {
   expect(ledgerDayAriaLabel({ ...sampleDay, state: "future" })).toBe(
     "Fri Jun 26, future day",
   );
-  expect(ledgerDayAriaLabel({ ...sampleDay, featureDone: false })).toBe(ledgerDayAriaLabel(sampleDay));
-  expect(ledgerDayAriaLabel({ ...sampleDay, weekdayLabel: "Sat", label: "Jun 27", targets: null, dailyValue: null, scoreParts: null, hours: 2 })).toBe(
-    "Sat Jun 27: weekend, 2.0 extra hours, 36 touches",
+  expect(ledgerDayAriaLabel({ ...sampleDay, featureDone: false })).toBe(
+    ledgerDayAriaLabel(sampleDay),
   );
+  expect(
+    ledgerDayAriaLabel({
+      ...sampleDay,
+      weekdayLabel: "Sat",
+      label: "Jun 27",
+      targets: null,
+      dailyValue: null,
+      scoreParts: null,
+      sends: null,
+      hours: 2,
+      creditedHours: 2,
+    }),
+  ).toBe("Sat Jun 27: weekend, 2.0 extra hours, 36 touches");
 });

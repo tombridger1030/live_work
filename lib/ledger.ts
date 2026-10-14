@@ -12,6 +12,7 @@ import {
 } from "@/lib/outreach-funnel";
 import {
   catchUpBar,
+  countsEmails,
   dailyOutreachBar,
   outreachProgress,
   outreachRequirement,
@@ -85,12 +86,14 @@ export type LedgerDay = ManualCounts & {
   monthLabel: string; // "Jun"
   inRange: boolean; // a real elapsed day inside the data window (vs an alignment pad)
   state: DayState;
-  hours: number;
+  hours: number; // at the desk, from captures; the hours input the mirror rebuilds from (creditedHours is derived)
+  creditedHours: number; // what counts toward bars and score: desk hours plus credited away time
   featureDone: boolean; // Legacy stored data only; never contributes to activity.
   commits: number;
   merges: number;
   targets: DailyTargets | null; // this weekday's share of its week's goal; null on weekends
   due: DueToday | null; // follow-ups and answers this day owes; null before the split
+  sends: DaySends | null; // what the goals share is earned from; null on weekends
   dailyValue: number | null; // null on weekends: extra work is never scored
   scoreParts: ScoreParts | null; // goals (of 70) + hours (of 30) = dailyValue; null on weekends
   active: boolean;
@@ -102,13 +105,15 @@ export type LedgerWeek = {
   label: string;
   counts: ManualCounts; // every manual count summed over the week's elapsed days
   touches: number; // new-prospect touches: unsplit touches + emails + connection requests
-  hours: number;
+  creditedHours: number; // summed day creditedHours: desk plus credited away time
   commits: number;
   merges: number;
   goal: WeeklyTargets; // the goal this week is measured against
   outreachPct: number;
   hoursPct: number;
-  weeklyValue: number;
+  baseValue: number; // 0 to 100: goals plus hours, before the email bonus
+  emailBonus: number; // 0 to EMAIL_BONUS_MAX_POINTS
+  weeklyValue: number; // baseValue + emailBonus, 0 to 100 + EMAIL_BONUS_MAX_POINTS
   days: LedgerDay[];
 };
 
@@ -133,7 +138,7 @@ export type LedgerData = {
     activeDays: number;
     activeDayStreak: number;
     touchesSum: number;
-    hoursSum: number;
+    hoursSum: number; // credited hours
   };
 };
 
@@ -156,27 +161,99 @@ function hoursProgress(hours: number, target: number): number {
   return target > 0 ? Math.min(1, hours / target) : 1;
 }
 
+// Time away from the desk is logged by hand and assumed to be lower quality
+// than camera-verified desk time (owner decision, 2026-10-13), so it counts
+// at half.
+export const AWAY_HOURS_CREDIT = 0.5;
+
+/**
+ * Hours that count toward a day's hours bar and the weekly hours goal.
+ *
+ * @param deskHours hours at the desk from captures, finite and >= 0
+ * @param awayMinutes hand-logged minutes worked away from the desk, >= 0
+ * @returns deskHours + AWAY_HOURS_CREDIT x awayMinutes / 60 (180 away minutes
+ *   credit 1.5 hours). Unrounded, so a day with no away time scores exactly
+ *   on its desk hours; displays and week totals round.
+ */
+export function creditedHours(deskHours: number, awayMinutes: number): number {
+  return deskHours + (AWAY_HOURS_CREDIT * awayMinutes) / 60;
+}
+
 // The activity score's split: finishing every send the day requires earns the
 // goals share, and the day's hours earn the rest. Single source of the weights.
 export const GOALS_POINTS = 70;
 export const HOURS_POINTS = 30;
 
+// Emails are bonus on a week whose goal asks for none: this many points per
+// email, up to EMAIL_BONUS_MAX_POINTS on top of the week's 100.
+export const EMAIL_BONUS_POINTS_PER_EMAIL = 1;
+export const EMAIL_BONUS_MAX_POINTS = 10;
+
 /** A weekday's score in its two whole-number parts; they always add up to the total. */
 export type ScoreParts = { goals: number; hours: number };
+
+/** One kind of send a weekday requires. Invariant: 0 <= done <= required. */
+export type SendProgress = { required: number; done: number };
+
+/**
+ * The sends a weekday's goals share is earned from. Each kind is capped at its
+ * own number, so extra sends of one kind never cover another:
+ * - firstTouches: new prospects against the day's outreach bar (connection
+ *   requests, plus emails only in a week whose goal still asks for them).
+ * - secondTouches: first LinkedIn messages owed to people who accepted.
+ * - replies: answers owed to prospects who replied, email and LinkedIn.
+ * Email follow-ups are a to-do, never a goal.
+ */
+export type DaySends = {
+  firstTouches: SendProgress;
+  secondTouches: SendProgress;
+  replies: SendProgress;
+};
+
+function owed(sent: number, due: number): SendProgress {
+  return { required: due, done: Math.min(sent, due) };
+}
+
+/**
+ * What a weekday requires against its own outreach bar and what it owes
+ * (`due`; null before the split, when nothing is owed), and how much of each
+ * is done.
+ */
+export function daySends(
+  counts: ManualCounts,
+  outreachBar: OutreachGoal,
+  due: DueToday | null,
+): DaySends {
+  const emailAnswers = owed(
+    counts.emailRepliesAnswered,
+    due?.emailRepliesAnswered ?? 0,
+  );
+  const linkedinAnswers = owed(
+    counts.linkedinRepliesAnswered,
+    due?.linkedinRepliesAnswered ?? 0,
+  );
+  return {
+    firstTouches: outreachRequirement(outreachTally(counts), outreachBar),
+    secondTouches: owed(counts.linkedinMessages, due?.linkedinMessages ?? 0),
+    replies: {
+      required: emailAnswers.required + linkedinAnswers.required,
+      done: emailAnswers.done + linkedinAnswers.done,
+    },
+  };
+}
 
 /**
  * Scores a weekday 0-100 against that day's own bars.
  *
- * Goals (70 points): every send the day requires counts once: new outreach
- * against its catch-up bar, plus answers owed to prospects who replied on
- * email or LinkedIn (`due`, null before the split). Each kind is capped at its
- * own number, so extra emails never cover unanswered replies. Follow-ups are a
- * to-do, not a goal, so they never touch the score. Nothing required (ahead of
- * pace, nothing owed) counts as done.
- * Hours (30 points): hours against the day's hours bar, capped.
+ * Goals (70 points): the share of every send in `daySends` that is done
+ * (1st touches, 2nd touches, and replies owed, each capped at its own number).
+ * Nothing required (ahead of pace, nothing owed) counts as done.
+ * Hours (30 points): `hours` (credited hours) against the day's hours bar,
+ * capped.
  *
- * Weekends are never scored. Outputs (accepts, replies, meetings) never touch
- * the score; this does not measure code velocity.
+ * Weekends are never scored. Outputs (accepts, replies received, meetings)
+ * and bonus emails never touch a day's score; this does not measure code
+ * velocity.
  */
 export function dailyScore(
   counts: ManualCounts,
@@ -184,18 +261,19 @@ export function dailyScore(
   targets: DailyTargets,
   due: DueToday | null,
 ): ScoreParts {
-  const outreach = outreachRequirement(outreachTally(counts), targets.outreach);
-  const emailAnswersDue = due?.emailRepliesAnswered ?? 0;
-  const linkedinAnswersDue = due?.linkedinRepliesAnswered ?? 0;
-  const required = outreach.required + emailAnswersDue + linkedinAnswersDue;
-  const done =
-    outreach.done +
-    Math.min(counts.emailRepliesAnswered, emailAnswersDue) +
-    Math.min(counts.linkedinRepliesAnswered, linkedinAnswersDue);
+  return scoreSends(daySends(counts, targets.outreach, due), hours, targets.hours);
+}
+
+// `dailyScore` from sends already worked out, so the score and the sends a
+// day report shows come from one computation.
+function scoreSends(sends: DaySends, hours: number, hoursBar: number): ScoreParts {
+  const kinds = Object.values(sends);
+  const required = kinds.reduce((sum, send) => sum + send.required, 0);
+  const done = kinds.reduce((sum, send) => sum + send.done, 0);
   const goalsPct = required > 0 ? done / required : 1;
   return {
     goals: Math.round(GOALS_POINTS * goalsPct),
-    hours: Math.round(HOURS_POINTS * hoursProgress(hours, targets.hours)),
+    hours: Math.round(HOURS_POINTS * hoursProgress(hours, hoursBar)),
   };
 }
 
@@ -233,9 +311,14 @@ export function resolveWeeklyGoal(
 }
 
 /**
- * Capped weekly progress, split like a weekday (goals 70, hours 30). At week
- * level the goals share is new outreach against the weekly goal; follow-ups
- * are judged day by day, where their due counts exist.
+ * Capped weekly progress, split like a weekday (goals 70, hours 30), plus the
+ * email bonus. At week level the goals share is new outreach against the
+ * weekly goal; 2nd touches and replies are judged day by day, where their due
+ * counts exist. A goal that asks for no emails earns
+ * EMAIL_BONUS_POINTS_PER_EMAIL per email sent, up to EMAIL_BONUS_MAX_POINTS:
+ * `baseValue` runs 0 to 100 and `weeklyValue` (base plus bonus) 0 to 110.
+ *
+ * @param hours credited hours for the week
  */
 export function weeklyProgress(
   tally: OutreachTally,
@@ -244,10 +327,17 @@ export function weeklyProgress(
 ) {
   const outreachPct = outreachProgress(tally, targets.outreach);
   const hoursPct = hoursProgress(hours, targets.hours);
+  const emailBonus = countsEmails(targets.outreach)
+    ? 0
+    : Math.min(EMAIL_BONUS_MAX_POINTS, EMAIL_BONUS_POINTS_PER_EMAIL * tally.emails);
+  const baseValue =
+    Math.round(GOALS_POINTS * outreachPct) + Math.round(HOURS_POINTS * hoursPct);
   return {
     outreachPct,
     hoursPct,
-    weeklyValue: Math.round(GOALS_POINTS * outreachPct) + Math.round(HOURS_POINTS * hoursPct),
+    baseValue,
+    emailBonus,
+    weeklyValue: baseValue + emailBonus,
   };
 }
 
@@ -256,10 +346,16 @@ export function weeklyProgress(
  * empty). An idle rest day (a weekend) is skipped rather than breaking the
  * run; a worked one counts like any other active day.
  */
-export function activeDayStreak(days: { state: DayState; active: boolean; restDay: boolean }[]): number {
+export function activeDayStreak(
+  days: { state: DayState; active: boolean; restDay: boolean }[],
+): number {
   const elapsed = days.filter((day) => day.state !== "future");
   let index = elapsed.length - 1;
-  if (index >= 0 && elapsed[index].state === "today" && !elapsed[index].active) {
+  if (
+    index >= 0 &&
+    elapsed[index].state === "today" &&
+    !elapsed[index].active
+  ) {
     index -= 1;
   }
   let streak = 0;
@@ -375,17 +471,31 @@ export function assembleLedger(
     }
     const counts = readManualCounts(fact);
     const hours = inRange ? (hoursByDay.get(day) ?? 0) : 0;
+    const credited = creditedHours(hours, counts.awayMinutes);
     const weekly = weeklyTargetsFor(day);
     const outreachBar = dailyOutreachBar(weekly.outreach, loggedEarlier, day);
-    const hoursBar = catchUpBar(weekly.hours, hoursEarlier, day, { decimals: 1, spreadOver: "week" });
+    const hoursBar = catchUpBar(weekly.hours, hoursEarlier, day, {
+      decimals: 1,
+      spreadOver: "week",
+    });
     const targets: DailyTargets | null =
-      outreachBar === null || hoursBar === null ? null : { outreach: outreachBar, hours: hoursBar };
+      outreachBar === null || hoursBar === null
+        ? null
+        : { outreach: outreachBar, hours: hoursBar };
     const tally = outreachTally(counts);
     loggedEarlier = addTally(loggedEarlier, tally);
-    hoursEarlier += hours;
+    hoursEarlier += credited;
     const due = inRange ? dueToday(facts, position, splitStart) : null;
+    // Padding days inside a week (before the data, or after today) have bars
+    // but nothing logged: no sends, and a zero score.
+    const sends =
+      targets !== null && inRange ? daySends(counts, targets.outreach, due) : null;
     const scoreParts: ScoreParts | null =
-      targets === null ? null : inRange ? dailyScore(counts, hours, targets, due) : { goals: 0, hours: 0 };
+      targets === null
+        ? null
+        : sends === null
+          ? { goals: 0, hours: 0 }
+          : scoreSends(sends, credited, targets.hours);
     return {
       ...counts,
       day,
@@ -398,14 +508,17 @@ export function assembleLedger(
       inRange,
       state,
       hours,
+      creditedHours: credited,
       featureDone: entry?.featureDone ?? false,
       commits: entry?.commits ?? 0,
       merges: entry?.merges ?? 0,
       targets,
       due,
-      dailyValue: scoreParts === null ? null : scoreParts.goals + scoreParts.hours,
+      sends,
+      dailyValue:
+        scoreParts === null ? null : scoreParts.goals + scoreParts.hours,
       scoreParts,
-      active: inRange && isActiveDay(counts, hours),
+      active: inRange && isActiveDay(counts, credited),
     };
   });
 
@@ -441,7 +554,8 @@ export function assembleLedger(
   }
   const weekdayAverages = WEEKDAY_LABELS.map((weekday, i) => ({
     weekday,
-    averageValue: weekdayCounts[i] > 0 ? Math.round(weekdaySums[i] / weekdayCounts[i]) : 0,
+    averageValue:
+      weekdayCounts[i] > 0 ? Math.round(weekdaySums[i] / weekdayCounts[i]) : 0,
   }));
 
   // Daily chart: every scored weekday + the average of the last five (one week).
@@ -449,7 +563,9 @@ export function assembleLedger(
     let weekAverage: number | null = null;
     if (i >= 4) {
       const window = scoredDays.slice(i - 4, i + 1);
-      weekAverage = Math.round(window.reduce((sum, w) => sum + w.dailyValue, 0) / 5);
+      weekAverage = Math.round(
+        window.reduce((sum, w) => sum + w.dailyValue, 0) / 5,
+      );
     }
     return {
       day: d.day,
@@ -472,11 +588,14 @@ export function assembleLedger(
     daysElapsed: elapsedDays.length,
     activeDays: elapsedDays.filter((d) => d.active).length,
     activeDayStreak: activeDayStreak(
-      elapsedDays.map((d) => ({ state: d.state, active: d.active, restDay: d.targets === null })),
+      elapsedDays.map((d) => ({
+        state: d.state,
+        active: d.active,
+        restDay: d.targets === null,
+      })),
     ),
     touchesSum: elapsedDays.reduce((sum, d) => sum + newTouches(d), 0),
-    hoursSum:
-      Math.round(elapsedDays.reduce((sum, d) => sum + d.hours, 0) * 10) / 10,
+    hoursSum: sumHours(elapsedDays),
   };
 
   return {
@@ -494,6 +613,13 @@ export function assembleLedger(
   };
 }
 
+// Credited hours over some days, to a tenth of an hour.
+function sumHours(days: LedgerDay[]): number {
+  return (
+    Math.round(days.reduce((sum, d) => sum + d.creditedHours, 0) * 10) / 10
+  );
+}
+
 function buildWeek(weekDays: LedgerDay[], goal: WeeklyTargets): LedgerWeek {
   const elapsedDays = weekDays.filter((d) => d.inRange);
   const counts = readManualCounts({});
@@ -502,20 +628,19 @@ function buildWeek(weekDays: LedgerDay[], goal: WeeklyTargets): LedgerWeek {
       counts[field] += day[field];
     }
   }
-  const hours =
-    Math.round(elapsedDays.reduce((sum, d) => sum + d.hours, 0) * 10) / 10;
+  const credited = sumHours(elapsedDays);
   const commits = elapsedDays.reduce((sum, d) => sum + d.commits, 0);
   const merges = elapsedDays.reduce((sum, d) => sum + d.merges, 0);
   const startLabel = weekDays[0].label;
   const endLabel = weekDays[weekDays.length - 1].label;
-  const progress = weeklyProgress(outreachTally(counts), hours, goal);
+  const progress = weeklyProgress(outreachTally(counts), credited, goal);
   return {
     weekStart: weekDays[0].day,
     weekEnd: weekDays[weekDays.length - 1].day,
     label: `${startLabel}–${endLabel}`,
     counts,
     touches: newTouches(counts),
-    hours,
+    creditedHours: credited,
     commits,
     merges,
     goal,

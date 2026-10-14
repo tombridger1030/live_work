@@ -31,22 +31,26 @@ export const LINKEDIN_COUNT_FIELDS = [
   "linkedinMeetings",
 ] as const;
 
+// Work the camera cannot see, in whole minutes so it fits the count contract
+// (1000 minutes is about 16.7 hours). Credited at a discount: see
+// `creditedHours` in lib/ledger.ts.
+export const TIME_COUNT_FIELDS = ["awayMinutes"] as const;
+
 export const MANUAL_COUNT_FIELDS = [
   ...UNSPLIT_COUNT_FIELDS,
   ...EMAIL_COUNT_FIELDS,
   ...LINKEDIN_COUNT_FIELDS,
+  ...TIME_COUNT_FIELDS,
 ] as const;
 
 export type ManualCountField = (typeof MANUAL_COUNT_FIELDS)[number];
 export type ManualCounts = Record<ManualCountField, number>;
 
 /** Counts that only exist once outreach is logged per channel. */
-export const SPLIT_COUNT_FIELDS: readonly ManualCountField[] =
-  MANUAL_COUNT_FIELDS.filter(
-    (field) =>
-      field !== "connections" &&
-      !(UNSPLIT_COUNT_FIELDS as readonly string[]).includes(field),
-  );
+export const SPLIT_COUNT_FIELDS: readonly ManualCountField[] = [
+  ...EMAIL_COUNT_FIELDS,
+  ...LINKEDIN_COUNT_FIELDS,
+].filter((field) => field !== "connections");
 
 export const MAX_DAILY_COUNT = 1000;
 
