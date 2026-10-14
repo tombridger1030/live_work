@@ -182,6 +182,14 @@ export function countsEmails(goal: OutreachGoal): boolean {
   return goal.kind === "touches" || goal.emails > 0;
 }
 
+/** What a week's outreach goal counts, in the owner's words: "touches", "requests", or "emails + requests". */
+export function outreachGoalUnit(goal: OutreachGoal): string {
+  if (goal.kind === "touches") {
+    return "touches";
+  }
+  return countsEmails(goal) ? "emails + requests" : "requests";
+}
+
 /**
  * What counts toward a week's goal, as one uncapped number: every new touch
  * for a touches goal; requests, plus emails only when the goal counts them,

@@ -287,8 +287,8 @@ function hoursSource(day: LedgerDay): string {
 }
 
 /**
- * One day's log, grouped the way outreach actually happens: Email, then
- * LinkedIn, each with its inputs first and outcomes after. Bars and due counts
+ * One day's log, grouped by channel: LinkedIn (where the goals are) first,
+ * then Email (bonus), each with its inputs first and outcomes after. Bars and due counts
  * come from the day's own catch-up targets; nothing here computes a goal.
  */
 export function LedgerDayReport({
@@ -360,60 +360,6 @@ export function LedgerDayReport({
         </section>
       ) : null}
 
-      <Card title="Email">
-        <CountRow
-          field="emailsSent"
-          label="Sent"
-          value={day.emailsSent}
-          {...(emailBonus !== null
-            ? {
-                detail: `Bonus · +${emailBonus} of ${EMAIL_BONUS_MAX_POINTS} on the week`,
-              }
-            : channelBars
-              ? {
-                  quickAdd: true,
-                  goal: channelBars.emails,
-                  ...goalDetail(day.emailsSent, channelBars.emails),
-                }
-              : { quickAdd: true })}
-          {...rowProps}
-        />
-        <CountRow
-          field="emailFollowUps"
-          label="Follow-ups"
-          value={day.emailFollowUps}
-          {...dueDetail(
-            day.emailFollowUps,
-            day.due?.emailFollowUps,
-            "emails 3+ weekdays old",
-          )}
-          {...rowProps}
-        />
-        <CountRow
-          field="emailReplies"
-          label="Replies received"
-          value={day.emailReplies}
-          {...rowProps}
-        />
-        <CountRow
-          field="emailRepliesAnswered"
-          label="Replies answered"
-          value={day.emailRepliesAnswered}
-          {...owedDetail(
-            day.emailRepliesAnswered,
-            day.due?.emailRepliesAnswered,
-            "answer",
-          )}
-          {...rowProps}
-        />
-        <CountRow
-          field="emailMeetings"
-          label="Meetings booked"
-          value={day.emailMeetings}
-          {...rowProps}
-        />
-      </Card>
-
       <Card title="LinkedIn">
         <CountRow
           field="connectionRequests"
@@ -469,6 +415,60 @@ export function LedgerDayReport({
           field="linkedinMeetings"
           label="Meetings booked"
           value={day.linkedinMeetings}
+          {...rowProps}
+        />
+      </Card>
+
+      <Card title="Email">
+        <CountRow
+          field="emailsSent"
+          label="Sent"
+          value={day.emailsSent}
+          {...(emailBonus !== null
+            ? {
+                detail: `Bonus · +${emailBonus} of ${EMAIL_BONUS_MAX_POINTS} on the week`,
+              }
+            : channelBars
+              ? {
+                  quickAdd: true,
+                  goal: channelBars.emails,
+                  ...goalDetail(day.emailsSent, channelBars.emails),
+                }
+              : { quickAdd: true })}
+          {...rowProps}
+        />
+        <CountRow
+          field="emailFollowUps"
+          label="Follow-ups"
+          value={day.emailFollowUps}
+          {...dueDetail(
+            day.emailFollowUps,
+            day.due?.emailFollowUps,
+            "emails 3+ weekdays old",
+          )}
+          {...rowProps}
+        />
+        <CountRow
+          field="emailReplies"
+          label="Replies received"
+          value={day.emailReplies}
+          {...rowProps}
+        />
+        <CountRow
+          field="emailRepliesAnswered"
+          label="Replies answered"
+          value={day.emailRepliesAnswered}
+          {...owedDetail(
+            day.emailRepliesAnswered,
+            day.due?.emailRepliesAnswered,
+            "answer",
+          )}
+          {...rowProps}
+        />
+        <CountRow
+          field="emailMeetings"
+          label="Meetings booked"
+          value={day.emailMeetings}
           {...rowProps}
         />
       </Card>

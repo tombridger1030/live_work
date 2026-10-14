@@ -55,7 +55,6 @@ test("legacy feature flags survive without affecting activity, charts, or streak
   expect(legacy.totals.activeDayStreak).toBe(0);
   expect(legacy.dailyChart).toEqual(empty.dailyChart);
   expect(legacy.weeklyChart).toEqual(empty.weeklyChart);
-  expect(legacy.weekdayAverages).toEqual(empty.weekdayAverages);
 });
 
 test("a week splits 70 points for goals and 30 for hours, with independent caps", () => {
@@ -72,6 +71,7 @@ test("a week splits 70 points for goals and 30 for hours, with independent caps"
   ).toEqual({
     outreachPct: 1,
     hoursPct: 1,
+    scoreParts: { goals: 70, hours: 30 },
     baseValue: 100,
     emailBonus: 0,
     weeklyValue: 100,
@@ -181,13 +181,6 @@ test("a weekend has no targets and no score, and its work still counts toward th
   expect(saturday.active).toBe(true); // worked: follow-ups and hours
   expect(data.weeks[0].creditedHours).toBe(3);
   expect(data.weeks[0].counts.emailFollowUps).toBe(6);
-  expect(data.weekdayAverages.map((average) => average.weekday)).toEqual([
-    "Mon",
-    "Tue",
-    "Wed",
-    "Thu",
-    "Fri",
-  ]);
   expect(data.dailyChart.map((point) => point.day)).toEqual(days.slice(0, 5));
 });
 
@@ -334,14 +327,6 @@ test("assembleLedger aggregates Monday-through-Sunday weekly goals", () => {
   expect(week.outreachPct).toBe(1);
   expect(week.hoursPct).toBe(1);
   expect(week.weeklyValue).toBe(100);
-  // The averages row covers the scored days, Monday to Friday.
-  expect(data.weekdayAverages.map((average) => average.weekday)).toEqual([
-    "Mon",
-    "Tue",
-    "Wed",
-    "Thu",
-    "Fri",
-  ]);
 });
 
 test("weekly targets stay historical while unsaved gaps inherit the latest earlier goal", () => {

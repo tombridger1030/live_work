@@ -11,7 +11,7 @@ import {
   useTransition,
 } from "react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
-import { X } from "lucide-react";
+import { Pencil, X } from "lucide-react";
 import { LedgerDayReport } from "@/components/LedgerDayReport";
 import { CodePulse } from "@/components/CodePulse";
 import { MirrorNotice, type MirrorView } from "@/components/MirrorNotice";
@@ -34,6 +34,7 @@ import {
   countsEmails,
   outreachBarTotal,
   outreachDone,
+  outreachGoalUnit,
   outreachTally,
 } from "@/lib/outreach-pace";
 import { cn } from "@/lib/utils";
@@ -50,7 +51,7 @@ const LedgerCharts = dynamic(
   () => import("@/components/LedgerCharts").then((mod) => mod.LedgerCharts),
   {
     ssr: false,
-    loading: () => <div className="h-[230px] rounded-2xl bg-white/[0.02]" />,
+    loading: () => <div className="h-full rounded-2xl bg-white/[0.02]" />,
   },
 );
 
@@ -61,6 +62,8 @@ export type LedgerProps = {
 };
 
 const WEEKDAY_COLUMNS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+// The history grid opens on this many recent weeks; "Show all" reveals the rest.
+const HISTORY_PREVIEW_WEEKS = 2;
 const SAVE_DEBOUNCE_MS = 360;
 
 type CountDrafts = Record<string, Partial<Record<ManualCountField, number>>>;
@@ -107,6 +110,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
   const [selectedDay, setSelectedDay] = useState(data.today);
   const [trayOpen, setTrayOpen] = useState(false);
   const [chartMode, setChartMode] = useState<"daily" | "weekly">("daily");
+  const [goalsOpen, setGoalsOpen] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   // Unsaved counts per day. Drafts re-score through the same reassembly the
   // server uses, so the board, bars, and pipeline move the moment a count does.
   const [drafts, setDrafts] = useState<CountDrafts>({});
@@ -210,9 +215,11 @@ export function Ledger({ data, mirror }: LedgerProps) {
           weeklyValue: week.weeklyValue,
           touches: outreachDone(outreachTally(week.counts), week.goal.outreach),
           hours: week.creditedHours,
+          scoreParts: week.scoreParts,
           baseValue: week.baseValue,
           emailBonus: week.emailBonus,
           touchesTarget: outreachBarTotal(week.goal.outreach),
+          touchesUnit: outreachGoalUnit(week.goal.outreach),
           hoursTarget: week.goal.hours,
         })),
     [viewWeeks],
@@ -230,6 +237,9 @@ export function Ledger({ data, mirror }: LedgerProps) {
     [viewWeeks],
   );
   const selectedDayData = viewDayMap.get(selectedDay) ?? null;
+  const historyWeeks = historyExpanded
+    ? viewWeeks
+    : viewWeeks.slice(-HISTORY_PREVIEW_WEEKS);
   const selectedWeek =
     viewWeeks.find((week) =>
       week.days.some((day) => day.day === selectedDay),
@@ -545,18 +555,30 @@ export function Ledger({ data, mirror }: LedgerProps) {
                   day streak
                 </p>
               </div>
-              <div className="flex items-center gap-2 rounded-full border border-white/[0.08] bg-black/20 px-3 py-1.5">
-                <span className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">
-                  Activity score
-                </span>
-                <Num className="text-lg font-semibold text-zinc-50">
-                  {String(summaryWeek.baseValue)}
-                </Num>
-                {summaryWeek.emailBonus > 0 ? (
-                  <span className="text-xs tabular-nums text-emerald-300">
-                    + {summaryWeek.emailBonus} bonus
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 rounded-full border border-white/[0.08] bg-black/20 px-3 py-1.5">
+                  <span className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">
+                    Activity score
                   </span>
-                ) : null}
+                  <Num className="text-lg font-semibold text-zinc-50">
+                    {String(summaryWeek.baseValue)}
+                  </Num>
+                  {summaryWeek.emailBonus > 0 ? (
+                    <span className="text-xs tabular-nums text-emerald-300">
+                      + {summaryWeek.emailBonus} bonus
+                    </span>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setGoalsOpen((open) => !open)}
+                  aria-expanded={goalsOpen}
+                  aria-controls="weekly-goals-editor"
+                  aria-label={goalsOpen ? "Close weekly goals" : "Edit weekly goals"}
+                  className="inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.03] text-zinc-400 transition-colors hover:border-white/[0.14] hover:text-zinc-100 active:scale-[0.96]"
+                >
+                  {goalsOpen ? <X className="size-4" /> : <Pencil className="size-4" />}
+                </button>
               </div>
             </div>
             <div
@@ -612,16 +634,18 @@ export function Ledger({ data, mirror }: LedgerProps) {
             </p>
           </section>
         ) : null}
-        <OutreachPipeline funnel={view.funnel} />
-        {summaryWeek ? (
-          <WeeklyGoalsEditor
-            weeks={goalWeeks}
-            initialWeekStart={summaryWeek.weekStart}
-            sessionRequired={sessionRequired}
-            onSave={persistWeeklyGoal}
-            onAuthenticate={authenticateOwner}
-          />
+        {summaryWeek && goalsOpen ? (
+          <div id="weekly-goals-editor">
+            <WeeklyGoalsEditor
+              weeks={goalWeeks}
+              initialWeekStart={summaryWeek.weekStart}
+              sessionRequired={sessionRequired}
+              onSave={persistWeeklyGoal}
+              onAuthenticate={authenticateOwner}
+            />
+          </div>
         ) : null}
+        <OutreachPipeline funnel={view.funnel} />
 
         <section className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.25)] sm:p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -658,47 +682,15 @@ export function Ledger({ data, mirror }: LedgerProps) {
               </div>
             </LayoutGroup>
           </div>
-          <LedgerCharts
-            mode={chartMode}
-            dailyRows={view.dailyChart}
-            weeklyRows={weeklyRows}
-            selectedDay={trayOpen ? selectedDay : null}
-            reduceMotion={reduceMotion}
-            intro={intro}
-          />
-        </section>
-
-        <section className="rounded-3xl border border-white/[0.08] bg-white/[0.03] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.25)] sm:p-5">
-          <h2 className="mb-3 text-sm font-semibold text-zinc-100">
-            Weekday activity averages
-          </h2>
-          <div className="grid grid-cols-5 gap-2">
-            {view.weekdayAverages.map((average, index) => (
-              <div
-                key={average.weekday}
-                className="flex flex-col items-center gap-2"
-              >
-                <div className="relative h-24 w-full overflow-hidden rounded-xl bg-white/[0.04]">
-                  <motion.div
-                    className="absolute inset-x-0 bottom-0 rounded-t-[10px] bg-gradient-to-t from-cyan-300/95 via-teal-300/85 to-indigo-400/55"
-                    initial={reduceMotion || !intro ? false : { height: 0 }}
-                    animate={{
-                      height: `${Math.max(3, average.averageValue)}%`,
-                    }}
-                    transition={motionTransition(reduceMotion, {
-                      ...appSpring,
-                      delay: intro ? index * 0.04 : 0,
-                    })}
-                  />
-                </div>
-                <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">
-                  {average.weekday}
-                </div>
-                <div className="text-sm font-medium text-zinc-100">
-                  <Num>{String(average.averageValue)}</Num>
-                </div>
-              </div>
-            ))}
+          <div className="h-[258px]">
+            <LedgerCharts
+              mode={chartMode}
+              dailyRows={view.dailyChart}
+              weeklyRows={weeklyRows}
+              selectedDay={trayOpen ? selectedDay : null}
+              reduceMotion={reduceMotion}
+              intro={intro}
+            />
           </div>
         </section>
 
@@ -719,11 +711,11 @@ export function Ledger({ data, mirror }: LedgerProps) {
                 {weekday}
               </div>
             ))}
-            {viewWeeks.map((week, weekIndex) => {
+            {historyWeeks.map((week, weekIndex) => {
               const railMonth = week.days[0].monthKey;
               const prevRailMonth =
                 weekIndex > 0
-                  ? viewWeeks[weekIndex - 1].days[0].monthKey
+                  ? historyWeeks[weekIndex - 1].days[0].monthKey
                   : null;
               const showRail = railMonth !== prevRailMonth;
               return (
@@ -736,11 +728,11 @@ export function Ledger({ data, mirror }: LedgerProps) {
                     const isToday = day.day === data.today;
                     const aboveMonth =
                       weekIndex > 0
-                        ? viewWeeks[weekIndex - 1].days[columnIndex]?.monthKey
+                        ? historyWeeks[weekIndex - 1].days[columnIndex]?.monthKey
                         : undefined;
                     const belowMonth =
-                      weekIndex < viewWeeks.length - 1
-                        ? viewWeeks[weekIndex + 1].days[columnIndex]?.monthKey
+                      weekIndex < historyWeeks.length - 1
+                        ? historyWeeks[weekIndex + 1].days[columnIndex]?.monthKey
                         : undefined;
                     const leftMonth =
                       columnIndex > 0
@@ -840,6 +832,18 @@ export function Ledger({ data, mirror }: LedgerProps) {
               );
             })}
           </div>
+          {viewWeeks.length > HISTORY_PREVIEW_WEEKS ? (
+            <button
+              type="button"
+              onClick={() => setHistoryExpanded((expanded) => !expanded)}
+              aria-expanded={historyExpanded}
+              className="mt-3 inline-flex min-h-10 w-full items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.03] text-xs text-zinc-300 transition-colors hover:border-white/[0.14] hover:text-zinc-100 active:scale-[0.96]"
+            >
+              {historyExpanded
+                ? `Show last ${HISTORY_PREVIEW_WEEKS} weeks`
+                : `Show all ${viewWeeks.length} weeks`}
+            </button>
+          ) : null}
         </section>
       </div>
 

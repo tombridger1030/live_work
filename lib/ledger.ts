@@ -111,6 +111,7 @@ export type LedgerWeek = {
   goal: WeeklyTargets; // the goal this week is measured against
   outreachPct: number;
   hoursPct: number;
+  scoreParts: ScoreParts; // goals (of 70) + hours (of 30) = baseValue
   baseValue: number; // 0 to 100: goals plus hours, before the email bonus
   emailBonus: number; // 0 to EMAIL_BONUS_MAX_POINTS
   weeklyValue: number; // baseValue + emailBonus, 0 to 100 + EMAIL_BONUS_MAX_POINTS
@@ -124,11 +125,14 @@ export type LedgerData = {
   todayIndex: number | null;
   days: LedgerDay[];
   weeks: LedgerWeek[];
-  weekdayAverages: { weekday: string; averageValue: number }[];
   dailyChart: {
     day: string;
     label: string;
     dailyValue: number;
+    scoreParts: ScoreParts; // goals + hours = dailyValue
+    sends: DaySends; // what the goals part was earned against, from the day's own bars
+    creditedHours: number;
+    hoursTarget: number; // the day's hours bar, from its own week's goal
     weekAverage: number | null; // mean of this and the previous four scored weekdays
   }[];
   weeklyChart: { weekStart: string; label: string; weeklyValue: number }[];
@@ -330,11 +334,15 @@ export function weeklyProgress(
   const emailBonus = countsEmails(targets.outreach)
     ? 0
     : Math.min(EMAIL_BONUS_MAX_POINTS, EMAIL_BONUS_POINTS_PER_EMAIL * tally.emails);
-  const baseValue =
-    Math.round(GOALS_POINTS * outreachPct) + Math.round(HOURS_POINTS * hoursPct);
+  const scoreParts: ScoreParts = {
+    goals: Math.round(GOALS_POINTS * outreachPct),
+    hours: Math.round(HOURS_POINTS * hoursPct),
+  };
+  const baseValue = scoreParts.goals + scoreParts.hours;
   return {
     outreachPct,
     hoursPct,
+    scoreParts,
     baseValue,
     emailBonus,
     weeklyValue: baseValue + emailBonus,
@@ -384,15 +392,6 @@ function isActiveDay(counts: ManualCounts, hours: number): boolean {
       counts.linkedinRepliesAnswered >
       0
   );
-}
-
-// The weekday-average row covers the scored days, Monday to Friday. The board
-// columns still run Monday → Sunday so weekend extra work stays visible.
-const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-
-// Monday-first weekday index (0 = Mon … 6 = Sun) from a JS UTC day (0 = Sun).
-function mondayIndex(utcDay: number): number {
-  return (utcDay + 6) % 7;
 }
 
 function addTally(left: OutreachTally, right: OutreachTally): OutreachTally {
@@ -541,22 +540,21 @@ export function assembleLedger(
 
   // Scored days are in-range weekdays; weekends are extra work and never scored.
   const scoredDays = elapsedDays.flatMap((day) =>
-    day.dailyValue === null ? [] : [{ ...day, dailyValue: day.dailyValue }],
+    day.dailyValue === null ||
+    day.scoreParts === null ||
+    day.sends === null ||
+    day.targets === null
+      ? []
+      : [
+          {
+            ...day,
+            dailyValue: day.dailyValue,
+            scoreParts: day.scoreParts,
+            sends: day.sends,
+            hoursTarget: day.targets.hours,
+          },
+        ],
   );
-
-  // Weekday averages, Monday to Friday.
-  const weekdaySums = new Array(WEEKDAY_LABELS.length).fill(0) as number[];
-  const weekdayCounts = new Array(WEEKDAY_LABELS.length).fill(0) as number[];
-  for (const day of scoredDays) {
-    const idx = mondayIndex(new Date(`${day.day}T12:00:00Z`).getUTCDay());
-    weekdaySums[idx] += day.dailyValue;
-    weekdayCounts[idx] += 1;
-  }
-  const weekdayAverages = WEEKDAY_LABELS.map((weekday, i) => ({
-    weekday,
-    averageValue:
-      weekdayCounts[i] > 0 ? Math.round(weekdaySums[i] / weekdayCounts[i]) : 0,
-  }));
 
   // Daily chart: every scored weekday + the average of the last five (one week).
   const dailyChart = scoredDays.map((d, i) => {
@@ -571,6 +569,10 @@ export function assembleLedger(
       day: d.day,
       label: d.label,
       dailyValue: d.dailyValue,
+      scoreParts: d.scoreParts,
+      sends: d.sends,
+      creditedHours: d.creditedHours,
+      hoursTarget: d.hoursTarget,
       weekAverage,
     };
   });
@@ -605,7 +607,6 @@ export function assembleLedger(
     todayIndex: todayDay?.index ?? null,
     days: ledgerDays,
     weeks,
-    weekdayAverages,
     dailyChart,
     weeklyChart,
     funnel: buildOutreachFunnel(facts, today),

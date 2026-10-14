@@ -12,6 +12,7 @@ import {
 import { readManualCounts, type ManualCounts } from "@/lib/ledger-fields";
 import { splitStartDay } from "@/lib/outreach-funnel";
 import type { LedgerEntry, WeeklyGoal } from "@/lib/types";
+import { outreachGoalUnit } from "@/lib/outreach-pace";
 import { connectionRequestGoal } from "@/lib/weekly-goal";
 
 // The owner's counts for Oct 5-13, 2026, as the live ledger showed them on
@@ -85,6 +86,10 @@ test("Oct 12 and 13 score 38 and 58: requests, first messages owed, and replies 
   });
   expect(tuesday.scoreParts).toEqual({ goals: 49, hours: 9 }); // 72 of 102; 2.8 of a 9.2-hour bar
   expect(tuesday.dailyValue).toBe(58);
+  // The chart reads the same split it draws as stacked bars.
+  const chartTuesday = ledger.dailyChart.find((point) => point.day === "2026-10-13");
+  expect(chartTuesday?.scoreParts).toEqual({ goals: 49, hours: 9 });
+  expect(ledger.weeks[1].scoreParts.goals + ledger.weeks[1].scoreParts.hours).toBe(ledger.weeks[1].baseValue);
   expect(ledger.days[12].sends).toBeNull(); // Saturday owes nothing scored
 });
 
@@ -157,4 +162,17 @@ test("logging away time never starts the outreach pipeline", () => {
     ...readManualCounts({ awayMinutes: 120 }),
   }));
   expect(splitStartDay(days)).toBeNull();
+});
+
+test("chart rows carry the goals of their own week", () => {
+  const ledger = ownersLedger();
+  const monday = ledger.dailyChart.find((point) => point.day === "2026-10-12");
+  expect(monday?.hoursTarget).toBe(7.9); // 55 h over the 7 days of Oct 12-18
+  expect(monday?.sends.secondTouches).toEqual({ required: 43, done: 0 });
+  // Oct 5-11 kept its email goal; Oct 12-18 asks for requests only.
+  expect(ledger.weeks.map((week) => outreachGoalUnit(week.goal.outreach))).toEqual([
+    "emails + requests",
+    "requests",
+  ]);
+  expect(outreachGoalUnit({ kind: "touches", touches: 100 })).toBe("touches");
 });
