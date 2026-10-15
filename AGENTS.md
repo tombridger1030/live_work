@@ -5,3 +5,4 @@
 - Read Blob documents with identity encoding when using their ETags for compare-and-swap. Compression can return a weak ETag that cannot authorize an atomic write.
 - Pull deployment secrets only into a private temporary directory, never over the capture server's `.env.local`.
 - Hours pace must adapt from prior work patterns and the current goal; do not substitute a fixed workday schedule. Exclude today's performance from its own expectation, and show when the learned baseline is provisional.
+- First messages become due the calendar day after acceptance. Same-day accepts must not lower the activity score; earlier unmessaged accepts still count.

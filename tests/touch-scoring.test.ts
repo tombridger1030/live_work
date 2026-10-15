@@ -11,6 +11,7 @@ import {
 } from "@/lib/ledger";
 import { readManualCounts, type ManualCounts } from "@/lib/ledger-fields";
 import { splitStartDay } from "@/lib/outreach-funnel";
+import { mirrorLedgerForToday } from "@/lib/mirror-ledger";
 import type { LedgerEntry, WeeklyGoal } from "@/lib/types";
 import { outreachGoalUnit } from "@/lib/outreach-pace";
 import { connectionRequestGoal } from "@/lib/weekly-goal";
@@ -70,35 +71,59 @@ function ownersLedger(extra: Record<string, Partial<ManualCounts>> = {}) {
   );
 }
 
+test("11 new accepts do not lower today's score and become due on the next mirrored day", () => {
+  const entries = new Map<string, LedgerEntry>([
+    ["2026-10-14", { day: "2026-10-14", featureDone: false, commits: 0, merges: 0, connectionRequests: 150, connections: 4 }],
+    ["2026-10-15", { day: "2026-10-15", featureDone: false, commits: 0, merges: 0, connectionRequests: 50, connections: 11, linkedinMessages: 4 }],
+  ]);
+  const ledger = assembleLedger(
+    dayRange("2026-10-12", "2026-10-18"), entries, new Map(), "2026-10-15", "2026-10-12",
+    [connectionRequestGoal("2026-10-12", 250, 55)],
+  );
+  const today = ledger.days[3];
+  expect(today.connections).toBe(11);
+  expect(today.sends?.firstTouches).toEqual({ required: 4, done: 4 });
+  expect(today.scoreParts).toEqual({ goals: 70, hours: 0 });
+  expect(ledger.dailyChart.find((day) => day.day === today.day)?.scoreParts).toEqual({ goals: 70, hours: 0 });
+  const withoutNewAccepts = reassembleLedger(ledger, { [today.day]: { connections: 0 } });
+  expect(withoutNewAccepts.days[3].connections).toBe(0);
+  expect(today.dailyValue).toBe(withoutNewAccepts.days[3].dailyValue);
+  expect(ledger.weeks[0].weeklyValue).toBe(withoutNewAccepts.weeks[0].weeklyValue);
+  expect(reassembleLedger(ledger)).toEqual(ledger);
+  const tomorrow = mirrorLedgerForToday(ledger, "2026-10-16");
+  expect(tomorrow.days[4].sends?.firstTouches).toEqual({ required: 11, done: 0 });
+  expect(tomorrow.days[3].scoreParts).toEqual(today.scoreParts);
+});
+
 // Touch names follow the owner's decision of 2026-10-14: requests are outreach,
 // 1st touches are first messages, 2nd touches are LinkedIn follow-ups.
-test("Oct 12 and 13 score 38 and 57: requests, 1st touches, 2nd touches, and replies owed", () => {
+test("Oct 12 and 13 score 42 and 62 with the acceptance grace day", () => {
   const ledger = ownersLedger();
   const [monday, tuesday] = ledger.days.slice(7, 9);
   expect(monday.sends).toEqual({
     outreach: { required: 50, done: 50 },
-    firstTouches: { required: 43, done: 0 },
+    firstTouches: { required: 33, done: 0 },
     secondTouches: { required: 0, done: 0 }, // Oct 6's messages fall due Oct 13
     replies: { required: 0, done: 0 },
   });
-  expect(monday.scoreParts).toEqual({ goals: 38, hours: 0 }); // 50 of 93
+  expect(monday.scoreParts).toEqual({ goals: 42, hours: 0 }); // 50 of 83; Monday's 10 accepts are not due
   expect(tuesday.sends).toEqual({
     outreach: { required: 50, done: 50 },
-    firstTouches: { required: 51, done: 22 },
+    firstTouches: { required: 43, done: 22 },
     secondTouches: { required: 2, done: 0 }, // Oct 6's 3 messages less Oct 13's 1 reply
     replies: { required: 1, done: 0 },
   });
-  expect(tuesday.scoreParts).toEqual({ goals: 48, hours: 9 }); // 72 of 104; 2.8 of a 9.2-hour bar
-  expect(tuesday.dailyValue).toBe(57);
+  expect(tuesday.scoreParts).toEqual({ goals: 53, hours: 9 }); // 72 of 96; 2.8 of a 9.2-hour bar
+  expect(tuesday.dailyValue).toBe(62);
   const followedUp = ownersLedger({ "2026-10-13": { linkedinFollowUps: 2 } })
     .days[8];
   expect(followedUp.sends?.secondTouches).toEqual({ required: 2, done: 2 });
-  expect(followedUp.scoreParts).toEqual({ goals: 50, hours: 9 }); // 74 of 104
+  expect(followedUp.scoreParts).toEqual({ goals: 54, hours: 9 }); // 74 of 96
   // The chart reads the same split it draws as stacked bars.
   const chartTuesday = ledger.dailyChart.find(
     (point) => point.day === "2026-10-13",
   );
-  expect(chartTuesday?.scoreParts).toEqual({ goals: 48, hours: 9 });
+  expect(chartTuesday?.scoreParts).toEqual({ goals: 53, hours: 9 });
   expect(
     ledger.weeks[1].scoreParts.goals + ledger.weeks[1].scoreParts.hours,
   ).toBe(ledger.weeks[1].baseValue);
@@ -202,7 +227,7 @@ test("away-from-desk time counts half, and reassembly never counts it twice", ()
   const monday = ledger.days[7];
   expect(monday.hours).toBe(0); // desk hours, from captures only
   expect(monday.creditedHours).toBe(1.5);
-  expect(monday.scoreParts).toEqual({ goals: 38, hours: 6 }); // 1.5 of a 7.9-hour bar
+  expect(monday.scoreParts).toEqual({ goals: 42, hours: 6 }); // 1.5 of a 7.9-hour bar
   expect(ledger.weeks[1].creditedHours).toBe(4.3);
   expect(reassembleLedger(ledger)).toEqual(ledger);
   expect(creditedHours(2.8, 45)).toBeCloseTo(3.175, 10);
@@ -244,7 +269,7 @@ test("chart rows carry the goals of their own week", () => {
   const ledger = ownersLedger();
   const monday = ledger.dailyChart.find((point) => point.day === "2026-10-12");
   expect(monday?.hoursTarget).toBe(7.9); // 55 h over the 7 days of Oct 12-18
-  expect(monday?.sends.firstTouches).toEqual({ required: 43, done: 0 });
+  expect(monday?.sends.firstTouches).toEqual({ required: 33, done: 0 });
   expect(monday?.outreachBar).toEqual({
     kind: "channels",
     emails: 0,

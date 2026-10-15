@@ -160,15 +160,43 @@ test("weekends show the backlog instead of nothing", () => {
   });
 });
 
-test("LinkedIn first messages due are acceptances not yet messaged", () => {
+test("LinkedIn first messages due exclude today's accepts and today's sends", () => {
   const history = days("2026-10-05", "2026-10-08", {
     "2026-10-05": { connectionRequests: 30, connections: 4 },
     "2026-10-06": { connections: 3, linkedinMessages: 4 },
     "2026-10-08": { connections: 2, linkedinMessages: 1 },
   });
   const due = dueToday(history, 3, "2026-10-05");
-  // 9 accepted through today, 4 messaged before today: 5 due; today's 1 counts as done, not as due.
-  expect(due?.linkedinMessages).toBe(5);
+  // 7 accepted before today, 4 already messaged: 3 due. Today's 2 accepts
+  // have a grace day; today's 1 message counts as done against the 3 owed.
+  expect(due?.linkedinMessages).toBe(3);
+});
+
+test.each([11, 1000])("%i new accepts get a grace day, become due tomorrow, and stay due until messaged", (connections) => {
+  const history = days("2026-10-15", "2026-10-18", {
+    "2026-10-15": { connectionRequests: 50, connections },
+    "2026-10-17": { linkedinMessages: connections },
+  });
+  expect(history.map((_, index) => dueToday(history, index, "2026-10-15")?.linkedinMessages))
+    .toEqual([0, connections, connections, 0]);
+});
+
+test("the acceptance grace day crosses weekends and month boundaries without waiting for a weekday", () => {
+  const history = days("2026-10-30", "2026-11-02", {
+    "2026-10-30": { connectionRequests: 50, connections: 11 },
+    "2026-10-31": { connections: 3 },
+    "2026-11-01": { connections: 2 },
+  });
+  expect(history.map((_, index) => dueToday(history, index, "2026-10-30")?.linkedinMessages))
+    .toEqual([0, 11, 14, 16]);
+});
+
+test("messages sent during the grace day clear tomorrow's backlog without making it negative", () => {
+  const history = days("2026-10-15", "2026-10-16", {
+    "2026-10-15": { connectionRequests: 50, connections: 11, linkedinMessages: 12 },
+  });
+  expect(dueToday(history, 0, "2026-10-15")?.linkedinMessages).toBe(0);
+  expect(dueToday(history, 1, "2026-10-15")?.linkedinMessages).toBe(0);
 });
 
 test("LinkedIn follow-ups fall due five weekdays after a first message, less replies, and stay due until sent", () => {

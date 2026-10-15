@@ -259,8 +259,9 @@ function followUpDay(sent: string, after: number): string {
  * - Email follow-ups: emails whose follow-up day (three weekdays after
  *   sending: Mon -> Thu, Wed -> Mon) has arrived, minus follow-ups sent before
  *   this day. Cannot see replies, so it can ask for an unneeded follow-up.
- * - LinkedIn first messages: people who accepted (through this day) minus first
- *   messages sent before this day.
+ * - LinkedIn first messages: people who accepted before this day minus first
+ *   messages sent before this day. Each acceptance gets its local calendar day
+ *   as a grace period; it becomes due the next day, including weekends.
  * - LinkedIn follow-ups: first messages whose follow-up day (five weekdays
  *   after sending: Tue Oct 6 -> Tue Oct 13) has arrived, minus LinkedIn replies
  *   received (through this day), minus follow-ups sent before this day. The
@@ -298,7 +299,10 @@ export function dueToday(days: FunnelDay[], index: number, splitStart: string | 
       0,
       followUpsFallenDue("emailsSent", EMAIL_FOLLOW_UP_WEEKDAYS) - sumOver(days, "emailFollowUps", fromDay, yesterday),
     ),
-    linkedinMessages: backlog("connections", "linkedinMessages"),
+    linkedinMessages: Math.max(
+      0,
+      sumOver(days, "connections", fromDay, yesterday) - sumOver(days, "linkedinMessages", fromDay, yesterday),
+    ),
     linkedinFollowUps: Math.max(
       0,
       followUpsFallenDue("linkedinMessages", LINKEDIN_FOLLOW_UP_WEEKDAYS) -

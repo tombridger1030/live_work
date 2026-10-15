@@ -270,7 +270,7 @@ function dueDetail(
 // Sends owed that count toward the day's goals. Each row names what it counts
 // as, so the inputs below match the touches named in the score above.
 const OWED_COPY = {
-  message: { pending: "to message", clear: "Everyone messaged", counts: TOUCH_LABELS.firstTouches },
+  message: { pending: "to message", clear: "No first messages due", counts: TOUCH_LABELS.firstTouches },
   followUp: { pending: "to follow up", clear: "Nothing due", counts: TOUCH_LABELS.secondTouches },
   answer: { pending: "to answer", clear: "Everyone answered", counts: "counts toward goals" },
 } as const;
@@ -398,6 +398,7 @@ export function LedgerDayReport({
           field="connections"
           label="Accepted"
           value={day.connections}
+          detail="First messages due the next day"
           {...rowProps}
         />
         <CountRow
