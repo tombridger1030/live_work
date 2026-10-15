@@ -113,12 +113,12 @@ test("a mirror weekly goal applies forward until a later mirror goal", () => {
 });
 
 test("a mirror channel goal and per-channel counts rebuild channel bars", () => {
-  const days = dayRange("2026-10-12", "2026-10-18");
-  const base = assembleLedger(days, new Map(), new Map(), "2026-10-13", "2026-10-12");
+  const days = dayRange("2026-10-05", "2026-10-11");
+  const base = assembleLedger(days, new Map(), new Map(), "2026-10-06", "2026-10-05");
 
   const updated = applyLedgerOverrides(base, {
-    days: { "2026-10-12": { emailsSent: 40, connectionRequests: 5 } },
-    weeks: { "2026-10-12": { reachouts: 150, hours: 55, emails: 100, connectionRequests: 50 } },
+    days: { "2026-10-05": { emailsSent: 40, connectionRequests: 5 } },
+    weeks: { "2026-10-05": { reachouts: 150, hours: 55, emails: 100, connectionRequests: 50 } },
   });
 
   expect(updated.days[0].targets?.outreach).toEqual({ kind: "channels", emails: 20, connectionRequests: 10 });

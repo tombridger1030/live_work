@@ -9,6 +9,9 @@ export const FUNNEL_WINDOW_DAYS = 28;
 // Below this many in a step's denominator, a rate is noise, not a verdict.
 export const FUNNEL_MIN_SAMPLE = 10;
 export const EMAIL_FOLLOW_UP_WEEKDAYS = 3;
+// A LinkedIn first message with no reply earns a follow-up (a 2nd touch) this
+// many weekdays after it was sent (owner decision, 2026-10-14).
+export const LINKEDIN_FOLLOW_UP_WEEKDAYS = 5;
 
 /** A ledger day as the pipeline sees it. Only in-range days carry real counts. */
 export type FunnelDay = { day: string; inRange: boolean } & ManualCounts;
@@ -39,11 +42,13 @@ export type OutreachFunnel = {
 
 /**
  * What a day owes, keyed by the count that clears each item: email follow-ups,
- * LinkedIn first messages, and answers to prospects who replied on each channel.
+ * LinkedIn first messages (1st touches), LinkedIn follow-ups (2nd touches), and
+ * answers to prospects who replied on each channel.
  */
 export type DueToday = {
   emailFollowUps: number;
   linkedinMessages: number;
+  linkedinFollowUps: number;
   emailRepliesAnswered: number;
   linkedinRepliesAnswered: number;
 };
@@ -235,11 +240,11 @@ export function buildOutreachFunnel(
   };
 }
 
-// The day an email's follow-up falls due: three weekdays after it was sent.
-function followUpDay(sent: string): string {
+// The day a send's follow-up falls due: `after` weekdays after it was sent.
+function followUpDay(sent: string, after: number): string {
   let day = sent;
   let weekdays = 0;
-  while (weekdays < EMAIL_FOLLOW_UP_WEEKDAYS) {
+  while (weekdays < after) {
     day = shiftDay(day, 1);
     if (isOutreachDay(day)) weekdays += 1;
   }
@@ -256,6 +261,12 @@ function followUpDay(sent: string): string {
  *   this day. Cannot see replies, so it can ask for an unneeded follow-up.
  * - LinkedIn first messages: people who accepted (through this day) minus first
  *   messages sent before this day.
+ * - LinkedIn follow-ups: first messages whose follow-up day (five weekdays
+ *   after sending: Tue Oct 6 -> Tue Oct 13) has arrived, minus LinkedIn replies
+ *   received (through this day), minus follow-ups sent before this day. The
+ *   counts cannot say who replied, so every reply is assumed to come from a
+ *   message that is due; when one comes from a newer message or a follow-up,
+ *   this asks for one too few, never one too many.
  * - Replies to answer, per channel: replies received (through this day) minus
  *   replies answered before this day.
  *
@@ -272,15 +283,28 @@ export function dueToday(days: FunnelDay[], index: number, splitStart: string | 
   // Received through today, minus what was handled before today.
   const backlog = (received: keyof ManualCounts, handled: keyof ManualCounts) =>
     Math.max(0, sumOver(days, received, fromDay, today.day) - sumOver(days, handled, fromDay, yesterday));
-  let emailsDue = 0;
-  for (const day of days) {
-    if (day.inRange && day.day >= fromDay && day.day <= today.day && followUpDay(day.day) <= today.day) {
-      emailsDue += day.emailsSent;
+  // Sends in the window whose follow-up day has arrived by today.
+  const followUpsFallenDue = (sent: keyof ManualCounts, after: number) => {
+    let total = 0;
+    for (const day of days) {
+      if (day.inRange && day.day >= fromDay && day.day <= today.day && followUpDay(day.day, after) <= today.day) {
+        total += day[sent];
+      }
     }
-  }
+    return total;
+  };
   return {
-    emailFollowUps: Math.max(0, emailsDue - sumOver(days, "emailFollowUps", fromDay, yesterday)),
+    emailFollowUps: Math.max(
+      0,
+      followUpsFallenDue("emailsSent", EMAIL_FOLLOW_UP_WEEKDAYS) - sumOver(days, "emailFollowUps", fromDay, yesterday),
+    ),
     linkedinMessages: backlog("connections", "linkedinMessages"),
+    linkedinFollowUps: Math.max(
+      0,
+      followUpsFallenDue("linkedinMessages", LINKEDIN_FOLLOW_UP_WEEKDAYS) -
+        sumOver(days, "linkedinReplies", fromDay, today.day) -
+        sumOver(days, "linkedinFollowUps", fromDay, yesterday),
+    ),
     emailRepliesAnswered: backlog("emailReplies", "emailRepliesAnswered"),
     linkedinRepliesAnswered: backlog("linkedinReplies", "linkedinRepliesAnswered"),
   };

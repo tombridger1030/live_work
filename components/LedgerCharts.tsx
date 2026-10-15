@@ -13,7 +13,8 @@ import {
 } from "recharts";
 import type { DaySends, ScoreParts } from "@/lib/ledger";
 import type { HoursPace } from "@/lib/hours-pace";
-import { ledgerChartDayTick } from "@/lib/ledger-ui";
+import type { OutreachGoal } from "@/lib/outreach-pace";
+import { ledgerChartDayTick, sendLines } from "@/lib/ledger-ui";
 
 type DailyRow = {
   day: string;
@@ -21,6 +22,7 @@ type DailyRow = {
   dailyValue: number;
   scoreParts: ScoreParts;
   sends: DaySends; // what the day required, from its own week's goal
+  outreachBar: OutreachGoal; // the day's own outreach bar, which names sends.outreach
   creditedHours: number;
   hoursTarget: number;
   hoursPace?: HoursPace;
@@ -202,9 +204,10 @@ function Legend({
 
 // What a day's sends part was earned against: each kind against what that
 // day required.
-function sendsDetail(sends: DaySends): string {
-  const { firstTouches, secondTouches, replies } = sends;
-  return `1st ${firstTouches.done}/${firstTouches.required} · 2nd ${secondTouches.done}/${secondTouches.required} · replies ${replies.done}/${replies.required}`;
+function sendsDetail(sends: DaySends, outreachBar: OutreachGoal): string {
+  return sendLines(sends, outreachBar)
+    .map(({ label, progress }) => `${label} ${progress.done}/${progress.required}`)
+    .join(" · ");
 }
 
 function TooltipRow({
@@ -502,7 +505,7 @@ export function LedgerCharts({
                         mark={<LegendDot color={SERIES.sends.color} />}
                         label="Sends"
                         value={`${point.sendsPoints} of 70`}
-                        detail={sendsDetail(point.sends)}
+                        detail={sendsDetail(point.sends, point.outreachBar)}
                       />
                       <TooltipRow
                         mark={<LegendDot color={SERIES.hours.color} />}

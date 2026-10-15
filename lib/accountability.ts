@@ -368,13 +368,13 @@ export async function evaluateAndNudge(now: Date = new Date()): Promise<void> {
 
   // Pace against the same assembled ledger the board shows (the deployed
   // overlay included), so a nudge can never disagree with the day report: the
-  // day's 1st touches, where bonus emails never count. Saturday and Sunday
-  // carry no sends, so no checkpoint fires then.
+  // day's new outreach (requests), where bonus emails never count. Saturday
+  // and Sunday carry no sends, so no checkpoint fires then.
   const ledger = await getDisplayedLedger(now);
   const todayRow = ledger?.days.find((day) => day.day === today) ?? null;
-  const firstTouches = todayRow?.sends?.firstTouches ?? null;
-  const dailyOutreachTarget = firstTouches?.required ?? null;
-  const outreachSent = firstTouches?.done ?? 0;
+  const outreach = todayRow?.sends?.outreach ?? null;
+  const dailyOutreachTarget = outreach?.required ?? null;
+  const outreachSent = outreach?.done ?? 0;
 
   // Fire a nudge: send + log, marking sent only when BOTH succeed so a transient
   // Telegram failure re-fires next cycle instead of being silently dropped.

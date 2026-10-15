@@ -1,5 +1,5 @@
 import type { OutreachGoal } from "@/lib/outreach-pace";
-import { isMondayWeekStart } from "@/lib/time";
+import { isMondayWeekStart, isValidDayKey } from "@/lib/time";
 import type { WeeklyGoal } from "@/lib/types";
 
 export const WEEKLY_GOAL_MAX_COUNT = 10000;
@@ -117,14 +117,37 @@ export function isStoredWeeklyGoal(
   );
 }
 
-/** The outreach goal a stored row describes: per channel when it has channels. */
+/**
+ * The first week whose emails are bonus whatever its stored goal says (owner
+ * decision, 2026-10-13). The Oct 12-18 goal was saved with 50 emails the day
+ * before; weeks before it keep the email goals they were saved with.
+ */
+export const EMAILS_BONUS_FROM_WEEK = "2026-10-12";
+
+/**
+ * The outreach goal a stored row sets for one week: per channel when the row
+ * has channels. From EMAILS_BONUS_FROM_WEEK on, a channel goal asks for 0
+ * emails, so its emails are bonus (see `countsEmails`) and its day bars ask
+ * for requests only. Example: the row {emails 50, connectionRequests 250}
+ * scores the week of Oct 5 as 50 emails and 250 requests, and the weeks of
+ * Oct 12 and Oct 19 as 250 requests.
+ *
+ * @param forWeek YYYY-MM-DD start of the week being scored. A goal carries
+ *   forward to later weeks, so this is not the row's own `weekStart`.
+ * @throws on a `forWeek` that is not a real day key, which would otherwise
+ *   compare as earlier than Oct 12 and quietly ask for emails.
+ */
 export function outreachGoalOf(
   goal: Pick<WeeklyGoal, "reachouts" | "emails" | "connectionRequests">,
+  forWeek: string,
 ): OutreachGoal {
+  if (!isValidDayKey(forWeek)) {
+    throw new Error(`outreachGoalOf needs a YYYY-MM-DD week, got ${forWeek}`);
+  }
   if (goal.emails !== undefined && goal.connectionRequests !== undefined) {
     return {
       kind: "channels",
-      emails: goal.emails,
+      emails: forWeek >= EMAILS_BONUS_FROM_WEEK ? 0 : goal.emails,
       connectionRequests: goal.connectionRequests,
     };
   }

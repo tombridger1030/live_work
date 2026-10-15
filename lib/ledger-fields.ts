@@ -21,11 +21,14 @@ export const EMAIL_COUNT_FIELDS = [
 ] as const;
 
 // `connections` predates the split but was always LinkedIn acceptances, so it
-// keeps its storage key and reads as "accepted".
+// keeps its storage key and reads as "accepted". `linkedinMessages` are first
+// messages to people who accepted (1st touches); `linkedinFollowUps` are the
+// follow-ups to first messages that got no reply (2nd touches).
 export const LINKEDIN_COUNT_FIELDS = [
   "connectionRequests",
   "connections",
   "linkedinMessages",
+  "linkedinFollowUps",
   "linkedinReplies",
   "linkedinRepliesAnswered",
   "linkedinMeetings",

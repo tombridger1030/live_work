@@ -109,12 +109,13 @@ test("a weekday gives 70 points for finishing its goals and 30 for its hours", (
   });
 });
 
-// Amended 2026-10-13 by the owner: first LinkedIn messages owed (2nd touches)
-// now count toward the goals share; email follow-ups still never do.
-test("answering replies and 2nd touches count toward the goals share; email follow-ups never do", () => {
+// Amended 2026-10-13 by the owner: first LinkedIn messages owed (1st touches
+// since 2026-10-14) count toward the goals share; email follow-ups never do.
+test("answering replies and 1st touches count toward the goals share; email follow-ups never do", () => {
   const due = {
     emailFollowUps: 12,
     linkedinMessages: 4,
+    linkedinFollowUps: 0,
     emailRepliesAnswered: 6,
     linkedinRepliesAnswered: 4,
   };
@@ -252,11 +253,11 @@ test("the reported week: 150 goal, 42 sent Mon-Wed, Thursday asks for 54", () =>
 });
 
 test("a channel week paces emails and requests separately; unsplit touches do not count toward them", () => {
-  const days = dayRange("2026-10-12", "2026-10-18");
+  const days = dayRange("2026-10-05", "2026-10-11");
   const entries = new Map<string, LedgerEntry>([
     [
-      "2026-10-12",
-      entry("2026-10-12", {
+      "2026-10-05",
+      entry("2026-10-05", {
         emailsSent: 20,
         connectionRequests: 4,
         reachouts: 30,
@@ -265,7 +266,7 @@ test("a channel week paces emails and requests separately; unsplit touches do no
   ]);
   const goals: WeeklyGoal[] = [
     {
-      weekStart: "2026-10-12",
+      weekStart: "2026-10-05",
       reachouts: 150,
       hours: 55,
       emails: 100,
@@ -275,9 +276,9 @@ test("a channel week paces emails and requests separately; unsplit touches do no
   const data = assembleLedger(
     days,
     entries,
-    new Map([["2026-10-12", 11]]), // clears Monday's 7.9-hour bar (55 / 7)
-    "2026-10-13",
-    "2026-10-12",
+    new Map([["2026-10-05", 11]]), // clears Monday's 7.9-hour bar (55 / 7)
+    "2026-10-06",
+    "2026-10-05",
     goals,
   );
   const [monday, tuesday] = data.days;

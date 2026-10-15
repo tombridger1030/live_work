@@ -174,9 +174,9 @@ export function outreachBarTotal(bar: OutreachGoal): number {
 
 /**
  * True when a week's goal counts emails: a legacy touches goal (emails were
- * touches) or a channel goal with an email number. Goals saved since Oct 13,
- * 2026 ask for 0 emails, and their emails are bonus instead (see
- * `weeklyProgress`), so no email is ever counted twice.
+ * touches) or a channel goal with an email number. Every week from Oct 12,
+ * 2026 asks for 0 emails (see `outreachGoalOf`), and its emails are bonus
+ * instead (see `weeklyProgress`), so no email is ever counted twice.
  */
 export function countsEmails(goal: OutreachGoal): boolean {
   return goal.kind === "touches" || goal.emails > 0;

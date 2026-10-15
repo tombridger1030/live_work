@@ -1,5 +1,11 @@
 # 1st and 2nd touches, email bonus, and away-from-desk hours
 
+> The touch names here were replaced on 2026-10-14: 1st touches are first
+> messages and 2nd touches are LinkedIn follow-ups. The Oct 12-18 goal no
+> longer needs re-saving: every week from Oct 12 asks for no emails whatever
+> its goal was saved with. See
+> [2026-10-14-touch-definitions-linkedin-follow-ups.md](2026-10-14-touch-definitions-linkedin-follow-ups.md).
+
 ## Problem
 
 On Tuesday 2026-10-13 the live ledger showed 208 LinkedIn requests, 54

@@ -30,7 +30,7 @@ import {
   reassembleLedger,
 } from "@/lib/ledger";
 import type { LedgerData, LedgerDay, LedgerDayPatch } from "@/lib/ledger";
-import { ledgerDayAriaLabel } from "@/lib/ledger-ui";
+import { ledgerDayAriaLabel, sendLines } from "@/lib/ledger-ui";
 import {
   countsEmails,
   outreachBarTotal,
@@ -460,8 +460,10 @@ export function Ledger({ data, mirror }: LedgerProps) {
             <span className="text-xs text-zinc-500">
               {selectedDayData.dailyValue === null
                 ? "Weekend · extra hours"
-                : selectedDayData.hoursPace?.expectedHours !== null && selectedDayData.hoursPace
-                  ? "Activity score · hours paced" : "Activity score"}
+                : selectedDayData.hoursPace?.expectedHours !== null &&
+                    selectedDayData.hoursPace
+                  ? "Activity score · hours paced"
+                  : "Activity score"}
             </span>
             <Num className="text-3xl font-semibold leading-none text-zinc-50">
               {selectedDayData.dailyValue === null
@@ -482,19 +484,16 @@ export function Ledger({ data, mirror }: LedgerProps) {
               of {HOURS_POINTS}
             </p>
           ) : null}
-          {selectedDayData.sends ? (
+          {selectedDayData.sends && selectedDayData.targets ? (
             <p className="mt-0.5 text-[11px] tabular-nums text-zinc-500">
-              {(
-                [
-                  ["1st touches", selectedDayData.sends.firstTouches],
-                  ["2nd touches", selectedDayData.sends.secondTouches],
-                  ["Replies", selectedDayData.sends.replies],
-                ] as const
-              ).map(([label, send], index) => (
+              {sendLines(
+                selectedDayData.sends,
+                selectedDayData.targets.outreach,
+              ).map(({ label, progress }, index) => (
                 <Fragment key={label}>
                   {index > 0 ? " · " : null}
-                  {label} <span className="text-zinc-300">{send.done}</span> of{" "}
-                  {send.required}
+                  {label} <span className="text-zinc-300">{progress.done}</span>{" "}
+                  of {progress.required}
                 </Fragment>
               ))}
             </p>
@@ -578,10 +577,16 @@ export function Ledger({ data, mirror }: LedgerProps) {
                   onClick={() => setGoalsOpen((open) => !open)}
                   aria-expanded={goalsOpen}
                   aria-controls="weekly-goals-editor"
-                  aria-label={goalsOpen ? "Close weekly goals" : "Edit weekly goals"}
+                  aria-label={
+                    goalsOpen ? "Close weekly goals" : "Edit weekly goals"
+                  }
                   className="inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.03] text-zinc-400 transition-colors hover:border-white/[0.14] hover:text-zinc-100 active:scale-[0.96]"
                 >
-                  {goalsOpen ? <X className="size-4" /> : <Pencil className="size-4" />}
+                  {goalsOpen ? (
+                    <X className="size-4" />
+                  ) : (
+                    <Pencil className="size-4" />
+                  )}
                 </button>
               </div>
             </div>
@@ -629,7 +634,8 @@ export function Ledger({ data, mirror }: LedgerProps) {
                   <span className="text-zinc-200">
                     {summaryWeek.counts.emailsSent}
                   </span>{" "}
-                  bonus emails (+{EMAIL_BONUS_POINTS_PER_EMAIL} each, up to {EMAIL_BONUS_MAX_POINTS}) ·{" "}
+                  bonus emails (+{EMAIL_BONUS_POINTS_PER_EMAIL} each, up to{" "}
+                  {EMAIL_BONUS_MAX_POINTS}) ·{" "}
                 </>
               ) : null}
               <span className="text-zinc-200">{summaryWeek.commits}</span>{" "}
@@ -645,12 +651,20 @@ export function Ledger({ data, mirror }: LedgerProps) {
                 className="mt-4 block w-full rounded-2xl border border-white/[0.07] bg-black/15 px-3 py-3 text-left transition-colors hover:bg-white/[0.03]"
               >
                 <p className="mb-1.5 text-xs text-zinc-400">
-                  Today · <span className="font-medium tabular-nums text-zinc-100">{todayDay.creditedHours.toFixed(1)} h</span>
-                  {todayDay.targets ? ` / ${todayDay.targets.hours.toFixed(1)} h goal` : ""}
+                  Today ·{" "}
+                  <span className="font-medium tabular-nums text-zinc-100">
+                    {todayDay.creditedHours.toFixed(1)} h
+                  </span>
+                  {todayDay.targets
+                    ? ` / ${todayDay.targets.hours.toFixed(1)} h goal`
+                    : ""}
                   <span className="float-right text-zinc-500">View day →</span>
                 </p>
                 <div id="today-hours-pace">
-                  <HoursPaceReadout pace={todayDay.hoursPace} context={view.hoursPaceContext} />
+                  <HoursPaceReadout
+                    pace={todayDay.hoursPace}
+                    context={view.hoursPaceContext}
+                  />
                 </div>
               </button>
             ) : null}
@@ -750,11 +764,13 @@ export function Ledger({ data, mirror }: LedgerProps) {
                     const isToday = day.day === data.today;
                     const aboveMonth =
                       weekIndex > 0
-                        ? historyWeeks[weekIndex - 1].days[columnIndex]?.monthKey
+                        ? historyWeeks[weekIndex - 1].days[columnIndex]
+                            ?.monthKey
                         : undefined;
                     const belowMonth =
                       weekIndex < historyWeeks.length - 1
-                        ? historyWeeks[weekIndex + 1].days[columnIndex]?.monthKey
+                        ? historyWeeks[weekIndex + 1].days[columnIndex]
+                            ?.monthKey
                         : undefined;
                     const leftMonth =
                       columnIndex > 0

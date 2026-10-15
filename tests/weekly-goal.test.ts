@@ -38,32 +38,56 @@ test("a new goal is stored as a channel goal asking for 0 emails", () => {
     connectionRequests: 250,
   });
   expect(isStoredWeeklyGoal(goal)).toBe(true);
-  expect(outreachGoalOf(goal)).toEqual({
+  expect(outreachGoalOf(goal, "2026-10-12")).toEqual({
     kind: "channels",
     emails: 0,
     connectionRequests: 250,
   });
 });
 
+// Owner, 2026-10-14: "we just agreed that emails are bonus". The Oct 12-18 goal
+// was saved with 50 emails the day before that decision.
+test("from the week of Oct 12 a goal asks for no emails, whatever it was saved with", () => {
+  const savedWithEmails = channelWeeklyGoal("2026-10-05", 50, 250, 55);
+  expect(outreachGoalOf(savedWithEmails, "2026-10-05")).toEqual({
+    kind: "channels",
+    emails: 50,
+    connectionRequests: 250,
+  });
+  for (const week of ["2026-10-12", "2026-10-19"]) {
+    expect(outreachGoalOf(savedWithEmails, week)).toEqual({
+      kind: "channels",
+      emails: 0,
+      connectionRequests: 250,
+    });
+  }
+  expect(outreachGoalOf({ reachouts: 150 }, "2026-10-12")).toEqual({
+    kind: "touches",
+    touches: 150,
+  });
+  expect(() => outreachGoalOf(savedWithEmails, "")).toThrow();
+  expect(() => outreachGoalOf(savedWithEmails, "Oct 12")).toThrow();
+});
+
 test("stored goals of either generation round-trip, and a channel goal's total must add up", () => {
-  const channel = channelWeeklyGoal("2026-10-12", 100, 50, 55);
+  const channel = channelWeeklyGoal("2026-10-05", 100, 50, 55);
   expect(channel).toEqual({
-    weekStart: "2026-10-12",
+    weekStart: "2026-10-05",
     reachouts: 150,
     hours: 55,
     emails: 100,
     connectionRequests: 50,
   });
-  expect(outreachGoalOf(channel)).toEqual({
+  expect(outreachGoalOf(channel, "2026-10-05")).toEqual({
     kind: "channels",
     emails: 100,
     connectionRequests: 50,
   });
-  expect(outreachGoalOf({ reachouts: 150 })).toEqual({
+  expect(outreachGoalOf({ reachouts: 150 }, "2026-10-05")).toEqual({
     kind: "touches",
     touches: 150,
   });
-  expect(storedWeeklyGoal("2026-10-12", outreachGoalOf(channel), 55)).toEqual(
+  expect(storedWeeklyGoal("2026-10-05", outreachGoalOf(channel, "2026-10-05"), 55)).toEqual(
     channel,
   );
 

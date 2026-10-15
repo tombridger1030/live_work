@@ -154,6 +154,7 @@ test("weekends show the backlog instead of nothing", () => {
   expect(dueToday(history, 5, "2026-10-05")).toEqual({
     emailFollowUps: 12,
     linkedinMessages: 6,
+    linkedinFollowUps: 0,
     emailRepliesAnswered: 0,
     linkedinRepliesAnswered: 0,
   });
@@ -168,4 +169,31 @@ test("LinkedIn first messages due are acceptances not yet messaged", () => {
   const due = dueToday(history, 3, "2026-10-05");
   // 9 accepted through today, 4 messaged before today: 5 due; today's 1 counts as done, not as due.
   expect(due?.linkedinMessages).toBe(5);
+});
+
+test("LinkedIn follow-ups fall due five weekdays after a first message, less replies, and stay due until sent", () => {
+  // Tue Oct 6 -> due Tue Oct 13; Thu Oct 8 -> due Thu Oct 15.
+  const history = days("2026-10-05", "2026-10-15", {
+    "2026-10-06": { connections: 10, linkedinMessages: 10 },
+    "2026-10-08": { connections: 4, linkedinMessages: 4 },
+    "2026-10-09": { linkedinReplies: 2 },
+    "2026-10-13": { linkedinFollowUps: 3 },
+    "2026-10-15": { linkedinReplies: 1 },
+  });
+  const dueOn = (day: string) =>
+    dueToday(history, history.findIndex((entry) => entry.day === day), "2026-10-05")?.linkedinFollowUps;
+  expect(dueOn("2026-10-10")).toBe(0); // Saturday: nothing is five weekdays old yet
+  expect(dueOn("2026-10-12")).toBe(0);
+  expect(dueOn("2026-10-13")).toBe(8); // 10 messaged, 2 replied; today's 3 count as done, not as less due
+  expect(dueOn("2026-10-14")).toBe(5); // the 5 not followed up carry over
+  // Thursday's 4 join; a reply logged today means one fewer to chase today.
+  expect(dueOn("2026-10-15")).toBe(8); // 14 - 3 replies - 3 sent
+});
+
+test("LinkedIn follow-ups due never go below zero when replies outnumber old messages", () => {
+  const history = days("2026-10-05", "2026-10-13", {
+    "2026-10-06": { connections: 2, linkedinMessages: 2 },
+    "2026-10-12": { linkedinReplies: 5 },
+  });
+  expect(dueToday(history, history.length - 1, "2026-10-05")?.linkedinFollowUps).toBe(0);
 });

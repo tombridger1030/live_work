@@ -1,5 +1,6 @@
 import { newTouches } from "@/lib/ledger-fields";
-import type { LedgerDay } from "@/lib/ledger";
+import type { DaySends, LedgerDay, SendProgress } from "@/lib/ledger";
+import { outreachGoalUnit, type OutreachGoal } from "@/lib/outreach-pace";
 
 export type ProgressState = "behind" | "on pace" | "done";
 
@@ -49,4 +50,39 @@ export function ledgerDayAriaLabel(day: LedgerDay): string {
   }
 
   return `${day.weekdayLabel} ${day.label}: ${day.dailyValue} activity points, ${newTouches(day)} touches, ${day.creditedHours.toFixed(1)} hours`;
+}
+
+// The owner's names for the sends after a request (decision 2026-10-14).
+export const TOUCH_LABELS = {
+  firstTouches: "1st touches", // first LinkedIn messages
+  secondTouches: "2nd touches", // LinkedIn follow-ups
+} as const;
+
+/**
+ * A weekday's sends in display order, named the way the owner names them:
+ * new outreach by its bar's unit ("Requests" or "Emails + requests"), then
+ * 1st touches, 2nd touches, and "Replies". A day before the channel split
+ * (a combined "touches" bar) tracked only new touches, so it shows just
+ * "Touches".
+ *
+ * @param outreachBar the day's own outreach bar (`targets.outreach`)
+ */
+export function sendLines(
+  sends: DaySends,
+  outreachBar: OutreachGoal,
+): { label: string; progress: SendProgress }[] {
+  const unit = outreachGoalUnit(outreachBar);
+  const outreach = {
+    label: unit.charAt(0).toUpperCase() + unit.slice(1),
+    progress: sends.outreach,
+  };
+  if (outreachBar.kind === "touches") {
+    return [outreach];
+  }
+  return [
+    outreach,
+    { label: TOUCH_LABELS.firstTouches, progress: sends.firstTouches },
+    { label: TOUCH_LABELS.secondTouches, progress: sends.secondTouches },
+    { label: "Replies", progress: sends.replies },
+  ];
 }

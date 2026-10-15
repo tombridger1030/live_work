@@ -4,6 +4,7 @@ import {
   ledgerChartDayTick,
   ledgerDayAriaLabel,
   progressState,
+  sendLines,
 } from "@/lib/ledger-ui";
 import type { LedgerDay } from "@/lib/ledger";
 
@@ -26,7 +27,8 @@ const sampleDay: LedgerDay = {
   targets: { outreach: { kind: "touches", touches: 36 }, hours: 10 },
   due: null,
   sends: {
-    firstTouches: { required: 36, done: 36 },
+    outreach: { required: 36, done: 36 },
+    firstTouches: { required: 0, done: 0 },
     secondTouches: { required: 0, done: 0 },
     replies: { required: 0, done: 0 },
   },
@@ -81,4 +83,30 @@ test("ledgerDayAriaLabel exposes the raw day facts for assistive tech", () => {
       creditedHours: 2,
     }),
   ).toBe("Sat Jun 27: weekend, 2.0 extra hours, 36 touches");
+});
+
+test("the score names sends the owner's way: outreach by its unit, then 1st and 2nd touches", () => {
+  const sends = {
+    outreach: { required: 63, done: 50 },
+    firstTouches: { required: 60, done: 25 },
+    secondTouches: { required: 1, done: 0 },
+    replies: { required: 2, done: 1 },
+  };
+  expect(
+    sendLines(sends, { kind: "channels", emails: 13, connectionRequests: 50 }).map(
+      ({ label, progress }) => `${label} ${progress.done} of ${progress.required}`,
+    ),
+  ).toEqual([
+    "Emails + requests 50 of 63",
+    "1st touches 25 of 60",
+    "2nd touches 0 of 1",
+    "Replies 1 of 2",
+  ]);
+  expect(
+    sendLines(sends, { kind: "channels", emails: 0, connectionRequests: 50 })[0].label,
+  ).toBe("Requests");
+  // Before the channel split only combined touches were tracked.
+  expect(
+    sendLines(sends, { kind: "touches", touches: 63 }).map(({ label }) => label),
+  ).toEqual(["Touches"]);
 });

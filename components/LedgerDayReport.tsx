@@ -18,7 +18,12 @@ import {
   EMAIL_BONUS_MAX_POINTS,
   type LedgerDay,
 } from "@/lib/ledger";
-import { progressState, statusTone, type ProgressState } from "@/lib/ledger-ui";
+import {
+  progressState,
+  statusTone,
+  TOUCH_LABELS,
+  type ProgressState,
+} from "@/lib/ledger-ui";
 import { outreachTally } from "@/lib/outreach-pace";
 import { cn } from "@/lib/utils";
 
@@ -262,17 +267,24 @@ function dueDetail(
   };
 }
 
-// Answers and first messages owed count toward the day's goals, so the row
-// says so.
+// Sends owed that count toward the day's goals. Each row names what it counts
+// as, so the inputs below match the touches named in the score above.
+const OWED_COPY = {
+  message: { pending: "to message", clear: "Everyone messaged", counts: TOUCH_LABELS.firstTouches },
+  followUp: { pending: "to follow up", clear: "Nothing due", counts: TOUCH_LABELS.secondTouches },
+  answer: { pending: "to answer", clear: "Everyone answered", counts: "counts toward goals" },
+} as const;
+
 function owedDetail(
   value: number,
   due: number | undefined,
-  verb: "answer" | "message",
+  kind: keyof typeof OWED_COPY,
 ): { detail?: string; detailState?: ProgressState } {
   if (due === undefined) return {};
-  if (due === 0) return { detail: `Everyone ${verb}ed` };
+  const copy = OWED_COPY[kind];
+  if (due === 0) return { detail: copy.clear };
   return {
-    detail: `${Math.min(value, due)} of ${due} to ${verb} · counts toward goals`,
+    detail: `${Math.min(value, due)} of ${due} ${copy.pending} · ${copy.counts}`,
     detailState: progressState(value, due),
   };
 }
@@ -396,6 +408,17 @@ export function LedgerDayReport({
             day.linkedinMessages,
             day.due?.linkedinMessages,
             "message",
+          )}
+          {...rowProps}
+        />
+        <CountRow
+          field="linkedinFollowUps"
+          label="Follow-ups"
+          value={day.linkedinFollowUps}
+          {...owedDetail(
+            day.linkedinFollowUps,
+            day.due?.linkedinFollowUps,
+            "followUp",
           )}
           {...rowProps}
         />
