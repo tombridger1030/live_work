@@ -60,3 +60,17 @@ The separate capture evaluation could not run: the authenticated production
 `/api/eval-cases` export returned HTTP 503. The previous release already records
 17 capture mismatches. No capture, vision, storage, or authentication code is
 changed here; this check is unavailable, not passing.
+
+Production release: `4a0a926`, deployment
+`dpl_6TBJrX52Cu1i6wMK6bKuveVVMCnh`, ready on livework-one.vercel.app and
+tally-focus.vercel.app. Chrome's October 15 report shows 11 accepts, 25 of 42
+first messages, and goals 54/70. At verification, its paced activity score is
+71 (54 goals + 17 hours), compared with 64 before release. The screenshot is
+saved locally at `tasks/acceptance-grace-day.png`.
+
+October 13 shows 17 accepts, 25 of 43 first messages, and score 74 (53 + 21).
+The deployed October 13 dashboard still renders its 8 PM image and 6.3 hours.
+All manual counts in the deployed API match the before-release snapshot; no
+production data was modified for verification. No existing data or code was
+deleted. The remaining limitation is aggregate daily counts: the ledger
+cannot identify which individual accepted or was messaged.
